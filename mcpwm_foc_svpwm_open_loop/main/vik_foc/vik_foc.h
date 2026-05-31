@@ -19,10 +19,30 @@
 #define FOC_PI              3.14159265358979323846f
 #define FOC_2PI             6.28318530717958647692f
 
+// √3/2 的值（约 0.8660），FOC 算法中常用的固定系数
+#define FOC_SQRT3_DIV_2        0.8660254037844386f
+// 2/√3 的值（约 1.1547），FOC 算法中常用的固定系数
+#define FOC_2_DIV_SQRT3        1.1547005383792515f
+
 // 角度 → 弧度
 #define FOC_DEG_TO_RAD(angle) ((angle) * FOC_PI / 180.0f)
 
+/*
+ * 量产级 PWM 占空比保护。
+ *
+ * FD6287 这类 bootstrap 高边驱动，不建议长时间 0% 或 100%。
+ * 你 m0_fd6287_pwm.c 里原本也是 0.02 ~ 0.98。
+ */
+#define VFOC_PWM_DUTY_MIN      0.02f
+#define VFOC_PWM_DUTY_MAX      0.98f
 
+// #define USE_FOC_SPWM
+#define USE_FOC_SVPWM
+
+/*
+ * 浮点计算保护阈值。
+ */
+#define VFOC_FLOAT_EPSILON     1.0e-6f
 
 
 /**
@@ -112,13 +132,54 @@ typedef struct
 }foc_data_t;
 
 
+/**
+ * @brief SVPWM 运行状态
+ */
+typedef enum
+{
+    VFOC_STATUS_OK = 0,
+
+    /* 输入参数有问题 */
+    VFOC_STATUS_NULL_PTR,
+
+    /* vbus 不合法 */
+    VFOC_STATUS_BAD_VBUS,
+
+    /* alpha/beta 里出现 NaN 或 Inf */
+    VFOC_STATUS_BAD_INPUT,
+
+    /*
+     * 电压矢量超过线性调制区，已经被缩放。
+     * 这不是严重错误，表示算法做了限幅保护。
+     */
+    VFOC_STATUS_SATURATED,
+
+} vfoc_status_t;
+
+
 void vfoc_init(void);
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s);
 motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v);
 clark_parm_t park_inv_transform(const foc_data_t *foc_v);
 spwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus);
 void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
-spwm_duty_t vfoc_get_spwm_duty(void);
+spwm_duty_t vfoc_get_pwm_duty(void);
+
+/*
+ * 量产级 SVPWM 核心接口：
+ * alpha/beta + vbus -> duty
+ */
+vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
+                                      float vbus,
+                                      spwm_duty_t *duty_out);
+/*
+ * 开环 SVPWM 运行接口。
+ */
+void vfoc_open_loop_svpwm_run(float target_rpm,
+                              float uq,
+                              float vbus,
+                              float dt_s);
+
 
 
 #endif

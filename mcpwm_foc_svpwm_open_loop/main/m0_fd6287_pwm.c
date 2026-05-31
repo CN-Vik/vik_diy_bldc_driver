@@ -377,6 +377,7 @@ static void m0_foc_control_task(void *arg)
          */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+        #ifdef USE_FOC_SPWM
         /*
          * 1. 调用你的开环 FOC + SPWM。
          *
@@ -390,14 +391,22 @@ static void m0_foc_control_task(void *arg)
                                 MOTOR_DRV_VBUS,
                                 M0_FOC_DT_S
         );
+        #elifdef USE_FOC_SVPWM
 
+            vfoc_open_loop_svpwm_run(M0_TEST_RPM,
+                                     M0_TEST_UQ,
+                                     MOTOR_DRV_VBUS,
+                                     M0_FOC_DT_S
+            );
+
+        #endif
         /*
          * 2. 获取 duty。
          */
-        pwm_duty = vfoc_get_spwm_duty();
+        pwm_duty = vfoc_get_pwm_duty();
 
         /*
-         * 3. 写入 MCPWM。
+         * 3. 写入 MCPWM
          *
          * duty_Ua → M0_IN1
          * duty_Ub → M0_IN2

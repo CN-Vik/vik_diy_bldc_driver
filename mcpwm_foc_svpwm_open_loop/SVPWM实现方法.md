@@ -1221,3 +1221,207 @@ static void m0_foc_control_task(void *arg)
 ```
 
 这版才是可以继续往“产品级 FOC”扩展的 SVPWM 写法。
+
+
+---------
+---------
+---------
+# SVPWM六扇区法和centered zero-sequence SVPWM比较
+结论先说：
+
+**对于你现在的 ESP32 + FD6287 + 三路 PWM 输入方案，我更推荐用 `centered zero-sequence SVPWM / min-max injection` 作为主实现。**
+
+六扇区法不是不好，它更适合**教学、理解、验证、调试扇区**。但真正写工程代码时，`centered zero-sequence SVPWM` 通常更简洁、分支更少、边界更稳，也更适合你现在这种从 `Ualpha/Ubeta` 直接生成三相 duty 的 FOC 架构。
+
+---
+
+## 两者本质关系
+
+它们不是两个完全不同的算法，而是 **同一个 SVPWM 思想的两种实现方式**。
+
+**六扇区法：**
+
+```text
+alpha/beta
+  ↓
+判断所在扇区
+  ↓
+计算 T1 / T2 / T0
+  ↓
+按照扇区表分配 Ta / Tb / Tc
+  ↓
+得到三相 duty
+```
+
+**centered zero-sequence SVPWM：**
+
+```text
+alpha/beta
+  ↓
+逆 Clarke 得到 ua / ub / uc
+  ↓
+找 max / min
+  ↓
+offset = -0.5 * (max + min)
+  ↓
+ua/ub/uc 同时加 offset
+  ↓
+得到三相 duty
+```
+
+Microchip 的资料把这种三相一起上下平移、使 duty 落到可实现范围内的方法归到 **Zero Sequence Modulation**；其 SVM 硬件用户指南里也明确有基于 **Min-Max method** 的 SVM block。([Microchip 开发者帮助][1])
+
+Imperix 的资料也说明，SVPWM 可以看作带有 min/max 注入的 SPWM，两者在线性区可以得到等价的调制效果。([imperix][2])
+
+---
+
+## 哪个更好？看场景
+
+### 1. 学习原理：六扇区法更好
+
+如果你想真正理解：
+
+```text
+基本电压矢量
+零矢量
+有效矢量
+T1 / T2 / T0
+每个扇区的开关状态
+```
+
+那六扇区法更直观。
+
+它能让你看到为什么 SVPWM 分 6 个 60° 扇区，以及每个扇区里面两个相邻有效矢量怎么合成目标电压矢量。
+
+所以学习阶段，六扇区法很好。
+
+---
+
+### 2. 工程代码：centered zero-sequence SVPWM 更好
+
+如果目标是写一个稳定、简洁、可维护的 FOC 调制函数，我更推荐：
+
+```c
+max_v = max(ua, ub, uc);
+min_v = min(ua, ub, uc);
+offset = -0.5f * (max_v + min_v);
+```
+
+原因是：
+
+```text
+1. 不需要判断 sector
+2. 不需要写六套 Ta/Tb/Tc 分配表
+3. 扇区边界不容易因为浮点误差抖动
+4. 代码更短，bug 面更小
+5. 很适合直接接 FOC 的 alpha/beta 输出
+6. 做电压矢量限幅更自然
+```
+
+TI 资料里也提到，零序注入/SVPWM 能提高直流母线利用率，相比普通 SPWM 可以获得更大的线性调制范围。([TI E2E][3])
+
+---
+
+### 3. 单电阻采样 / 特殊采样窗口：六扇区法更方便
+
+如果后面你要做：
+
+```text
+单电阻电流采样
+两电阻电流采样窗口优化
+DPWM
+指定零矢量 O000 / O111 分配
+低损耗调制
+特定扇区采样重构
+```
+
+那六扇区法或者“带 sector 输出的 SVPWM”会更方便。
+
+因为你能明确知道当前在哪个扇区，T1/T2/T0 各是多少，哪些开关状态持续时间够不够 ADC 采样。
+
+NXP、Microchip 这类电机控制资料里也能看到，实际 FOC 系统通常是把 `alpha/beta` 电压矢量转换成 PWM duty，同时还会配合电流采样、速度/位置估算、PI 控制等完整模块。([nxp.jp][4])
+
+---
+
+## 我的建议：你应该这样选
+
+对你现在这个阶段：
+
+```text
+ESP32
+FD6287
+三路 PWM 输入
+开环 FOC
+还没做电流采样
+还没做闭环
+```
+
+**直接用 centered zero-sequence SVPWM。**
+
+也就是：
+
+```text
+Ualpha / Ubeta
+  ↓
+min-max zero sequence injection
+  ↓
+duty_U / duty_V / duty_W
+  ↓
+MCPWM
+```
+
+这比你现在强行上六扇区法更稳。
+
+---
+
+## 但高端产品里，最优写法是组合方案
+
+真正我建议你最终写成这样：
+
+```c
+typedef struct
+{
+    float duty_u;
+    float duty_v;
+    float duty_w;
+
+    uint8_t sector;
+    uint8_t saturated;
+} svpwm_out_t;
+```
+
+内部主 duty 用 **centered zero-sequence / min-max** 算，额外再算一个 `sector` 给调试、采样同步、故障分析使用。
+
+也就是：
+
+```text
+主调制 duty：
+    用 min-max zero sequence
+
+辅助信息：
+    计算 sector
+    计算 saturated
+    计算 vref
+```
+
+这样最工程化。
+
+---
+
+## 一句话总结
+
+| 目标                  | 推荐                              |
+| ------------------- | ------------------------------- |
+| 学懂 SVPWM 原理         | 六扇区法                            |
+| 当前 ESP32 开环 FOC 跑起来 | centered zero-sequence SVPWM    |
+| 量产主调制代码             | centered zero-sequence SVPWM    |
+| 单电阻采样/特殊采样窗口        | 六扇区信息也要保留                       |
+| 最佳工程架构              | min-max 算 duty + sector 辅助调试/采样 |
+
+所以对你来说：**主代码用 centered zero-sequence SVPWM，不要先上六扇区法。**
+后面你做电流采样、闭环 FOC 时，再补一个 `sector` 输出即可。
+
+[1]: https://developerhelp.microchip.com/xwiki/bin/view/applications/motors/control-algorithms/zsm/zsm/?utm_source=chatgpt.com "Zero Sequence Modulation - Microchip Developer Help"
+[2]: https://imperix.com/doc/implementation/svpwm-vs-spwm-modulation-techniques?utm_source=chatgpt.com "SVPWM vs SPWM modulation techniques"
+[3]: https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/38/5123.DPWM1.pdf?utm_source=chatgpt.com "A High-performance Generalized Discontinuous PWM ..."
+[4]: https://www.nxp.jp/docs/en/application-note/AN1930.pdf?utm_source=chatgpt.com "3-Phase AC Induction Motor Vector Control Using a ..."

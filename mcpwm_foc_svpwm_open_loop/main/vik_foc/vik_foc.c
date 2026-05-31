@@ -208,6 +208,314 @@ static float vfoc_limit(float value, float min, float max)
     return value;
 }
 
+
+/**
+ * @brief 判断浮点数是否合法
+ *
+ * 量产代码里，不建议让 NaN/Inf 继续进入 PWM。
+ * 一旦 NaN 进入 duty，后面 compare 值可能异常。
+ */
+static int vfoc_float_is_valid(float value)
+{
+    // 是有限正常数 → 返回1；是无穷大/NaN → 返回0
+    // 判断浮点数是不是正常的有限数字
+    return isfinite(value);
+}
+
+/**
+ * @brief 量产级 SVPWM：alpha/beta -> 三相 duty
+ *
+ * 输入：
+ *      c_v->I_alpha : alpha 轴电压，单位 V
+ *      c_v->I_beta  : beta 轴电压，单位 V
+ *      vbus          : 母线电压，单位 V
+ *
+ * 输出：
+ *      duty_out->duty_Ua : U 相 duty，范围 VFOC_PWM_DUTY_MIN ~ VFOC_PWM_DUTY_MAX
+ *      duty_out->duty_Ub : V 相 duty
+ *      duty_out->duty_Uc : W 相 duty
+ *
+ * 核心思想：
+ *      1. 对 alpha/beta 电压矢量做线性调制区限幅
+ *      2. alpha/beta -> 三相相电压 ua/ub/uc
+ *      3. 找 max/min
+ *      4. 注入零序 offset = -0.5 * (max + min)
+ *      5. 转换为 duty
+ *
+ * 为什么这是工程版：
+ *      - 不依赖扇区判断，避免扇区边界抖动 bug
+ *      - 直接 alpha/beta 输入，减少中间层
+ *      - 自动限制在线性调制区
+ *      - 保留 duty 上下限，保护 bootstrap 驱动
+ *      - 返回状态码，方便后续故障记录
+ */
+vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
+                                      float vbus,
+                                      spwm_duty_t *duty_out)
+{
+    float alpha;
+    float beta;
+
+    float vref;
+    float vref_max;
+    float scale;
+
+    float ua;
+    float ub;
+    float uc;
+
+    float max_v;
+    float min_v;
+    float zero_offset;
+
+    float duty_half_range;
+
+    vfoc_status_t status = VFOC_STATUS_OK;
+
+    /*
+     * 先给安全默认值。
+     * 如果后面参数错误，至少输出 50% 附近，不会随机乱跳。
+     */
+    spwm_duty_t duty = {
+        .duty_Ua = 0.5f,
+        .duty_Ub = 0.5f,
+        .duty_Uc = 0.5f,
+    };
+
+    if (duty_out == NULL)
+    {
+        return VFOC_STATUS_NULL_PTR;
+    }
+
+    *duty_out = duty;
+
+    if (c_v == NULL)
+    {
+        return VFOC_STATUS_NULL_PTR;
+    }
+
+    if ((vbus <= VFOC_FLOAT_EPSILON) || (!vfoc_float_is_valid(vbus)))
+    {
+        return VFOC_STATUS_BAD_VBUS;
+    }
+
+    alpha = c_v->I_alpha;
+    beta  = c_v->I_beta;
+
+    if ((!vfoc_float_is_valid(alpha)) || (!vfoc_float_is_valid(beta)))
+    {
+        return VFOC_STATUS_BAD_INPUT;
+    }
+
+    /*
+     * duty 可用半范围。
+     *
+     * 理想 duty 是 0.0 ~ 1.0，则半范围是 0.5。
+     * 但 FD6287 bootstrap 驱动不建议靠近 0% / 100%，
+     * 所以这里用 0.02 ~ 0.98，半范围就是 0.48。
+     */
+    duty_half_range = 0.5f - VFOC_PWM_DUTY_MIN;
+
+    if ((VFOC_PWM_DUTY_MAX - 0.5f) < duty_half_range)
+    {
+        duty_half_range = VFOC_PWM_DUTY_MAX - 0.5f;
+    }
+
+    if (duty_half_range <= 0.0f)
+    {
+        return VFOC_STATUS_BAD_INPUT;
+    }
+
+    /*
+     * SVPWM 线性调制区最大 alpha/beta 电压矢量幅值：
+     *
+     * 理想情况下：
+     *      Vref_max = Vbus / sqrt(3)
+     *
+     * 考虑 duty_min/duty_max 以后：
+     *      Vref_max = 2 / sqrt(3) * duty_half_range * Vbus
+     *
+     * duty_half_range = 0.5 时：
+     *      Vref_max = 0.57735 * Vbus
+     *
+     * duty_half_range = 0.48 时：
+     *      Vref_max ≈ 0.554 * Vbus
+     */
+    vref = sqrtf((alpha * alpha) + (beta * beta));
+    vref_max = FOC_2_DIV_SQRT3 * duty_half_range * vbus;
+
+    /*
+     * 超过线性调制区就等比例缩小。
+     *
+     * 注意：
+     * 这里不是粗暴 clamp alpha 或 beta，
+     * 而是保持矢量方向不变，只缩小幅值。
+     * 这样电压角度不会畸变。
+     */
+    if ((vref > vref_max) && (vref > VFOC_FLOAT_EPSILON))
+    {
+        scale = vref_max / vref;
+        alpha *= scale;
+        beta  *= scale;
+        status = VFOC_STATUS_SATURATED;
+    }
+
+    /*
+     * alpha/beta -> 三相。
+     *
+     * ua + ub + uc = 0
+     */
+    ua = alpha;
+    ub = (-0.5f * alpha) + (FOC_SQRT3_DIV_2 * beta);
+    uc = (-0.5f * alpha) - (FOC_SQRT3_DIV_2 * beta);
+
+    /*
+     * 找最大值和最小值。
+     */
+    max_v = fmaxf(fmaxf(ua, ub), uc);
+    min_v = fminf(fminf(ua, ub), uc);
+
+    /*
+     * 零序注入。
+     *
+     * 三相同时加同一个 offset，不改变线电压：
+     *      Uab = Ua - Ub
+     *      Ubc = Ub - Uc
+     *      Uca = Uc - Ua
+     *
+     * 但是可以把三相波形居中塞进 PWM 可输出范围。
+     */
+    zero_offset = -0.5f * (max_v + min_v);
+
+    ua += zero_offset;
+    ub += zero_offset;
+    uc += zero_offset;
+
+    /*
+    * 这里打印的是 SVPWM 注入零序之后的三相电压。
+    * 注意：这个 sum 不一定等于 0。
+    */
+    ESP_LOGI(TAG,"SVPWM UVW: %.3f,%.3f,%.3f,%.3f,%.3f \r\n",
+            ua,
+            ub,
+            uc,
+            zero_offset,
+            ua + ub + uc
+    );
+
+    /*
+     * 电压 -> duty。
+     *
+     * duty = 0.5 + phase_voltage / vbus
+     */
+    duty.duty_Ua = 0.5f + (ua / vbus);
+    duty.duty_Ub = 0.5f + (ub / vbus);
+    duty.duty_Uc = 0.5f + (uc / vbus);
+
+    /*
+     * 最终 duty 保护。
+     * 算法前面已经做过线性区缩放，正常不会碰到这里。
+     * 这里是最后一道保险。
+     */
+    duty.duty_Ua = vfoc_limit(duty.duty_Ua, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+    duty.duty_Ub = vfoc_limit(duty.duty_Ub, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+    duty.duty_Uc = vfoc_limit(duty.duty_Uc, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+
+    *duty_out = duty;
+
+    return status;
+}
+
+
+/**
+ * @brief 开环电压 FOC + SVPWM
+ *
+ * 这是替代 vfoc_open_loop_spwm_run() 的量产风格版本。
+ *
+ * 注意：
+ * 这仍然是开环控制，不是完整量产 FOC。
+ * 真正量产还需要：
+ *      电流采样
+ *      电流环 PI
+ *      速度环 PI
+ *      位置/速度估算或编码器
+ *      过流/过压/欠压/堵转/温度保护
+ *
+ * 但是这个 SVPWM 调制器本身是工程化写法。
+ */
+void vfoc_open_loop_svpwm_run(float target_rpm,
+                              float uq,
+                              float vbus,
+                              float dt_s)
+{
+    clark_parm_t l_temp_clark_v = {0};
+    vfoc_status_t svpwm_status;
+
+    if (dt_s <= 0.0f)
+    {
+        return;
+    }
+
+    /*
+     * 1. 更新开环电角度。
+     */
+    vfoc_update_open_loop_angle(target_rpm, dt_s);
+
+    /*
+     * 2. 设置 dq 电压。
+     *
+     * 开环阶段：
+     *      Ud = 0
+     *      Uq = 给定测试电压
+     */
+    vfoc_dt.park_val.Ud = 0.0f;
+    vfoc_dt.park_val.Uq = uq;
+
+    /*
+     * 3. 逆 Park：
+     *      Ud/Uq + theta_e -> Ualpha/Ubeta
+     */
+    l_temp_clark_v = park_inv_transform(&vfoc_dt);
+
+    /*
+     * 4. 可选：保存 Ua/Ub/Uc，方便你打印调试。
+     *
+     * 注意：
+     * 真正 SVPWM duty 不依赖这里的 Ua/Ub/Uc。
+     * SVPWM 是直接用 alpha/beta 算 duty。
+     */
+    vfoc_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
+
+    /*
+     * 5. SVPWM：
+     *      Ualpha/Ubeta -> duty_Ua/duty_Ub/duty_Uc
+     */
+    svpwm_status = vfoc_svpwm_calc_duty_uab(
+                        &l_temp_clark_v,
+                        vbus,
+                        &vfoc_dt.motor_drv_val.spwm_duty_val
+                   );
+
+    /*
+     * 量产代码里，不建议 1ms 打一次日志。
+     * 这里只在异常时打。
+     */
+    if ((svpwm_status != VFOC_STATUS_OK) &&
+        (svpwm_status != VFOC_STATUS_SATURATED))
+    {
+        ESP_LOGE(TAG, "SVPWM error, status=%d", (int)svpwm_status);
+    }
+
+    /*
+     * 如果只是 VFOC_STATUS_SATURATED，说明电压指令过大，
+     * 算法已经自动缩放，不需要停机。
+     *
+     * 后续闭环时，可以把这个状态反馈给电压环/电流环，
+     * 做 anti-windup 防积分饱和。
+     */
+}
+
+
 /**
  * @brief 根据Ua,Ub,Uc 输出三相的PWM值(最大为100%)
  * 
@@ -279,12 +587,12 @@ void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s)
     vfoc_dt.park_val.Ud = 0.0f;
 
     /*
-     * 3. 逆 Park：Ud/Uq -> Ualpha/Ubeta
+     * 3. Park逆变换：Id/Iq -> Ualpha/Ubeta
      */
     l_temp_clark_v = park_inv_transform(&vfoc_dt);
 
     /*
-     * 4. 逆 Clarke：Ualpha/Ubeta -> Ua/Ub/Uc
+     * 4. Clarke逆变换：Ualpha/Ubeta -> Ua/Ub/Uc
      */
     vfoc_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
 
@@ -305,7 +613,7 @@ void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s)
         vfoc_spwm_calc_duty(&vfoc_dt.motor_drv_val, vbus);
 }
 
-spwm_duty_t vfoc_get_spwm_duty(void)
+spwm_duty_t vfoc_get_pwm_duty(void)
 {
     return vfoc_dt.motor_drv_val.spwm_duty_val;
 }
