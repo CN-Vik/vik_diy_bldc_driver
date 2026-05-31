@@ -341,6 +341,10 @@ bool inverter_update_cb(mcpwm_timer_handle_t timer,
     return task_yield;
 }
 
+
+extern void vfoc_init(void);
+extern void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Hello FOC float version");
@@ -356,174 +360,181 @@ void app_main(void)
         return;
     }
 
-    /*
-     * dq_out：人为给定的旋转电压矢量。
-     * ab_out：Park 反变换之后的 alpha/beta 电压矢量。
-     * uvw_out：最终转换成三相 U/V/W 的电压指令。
-     */
-    foc_dq_float_t dq_out = {0.0f, 0.0f};
-    foc_ab_float_t ab_out = {0.0f, 0.0f};
-    foc_uvw_float_t uvw_out = {0.0f, 0.0f, 0.0f};
+    vfoc_init();
+    vfoc_open_loop_spwm_run( 0.0f,
+                            0.0f,
+                            0.0f,
+                            0.0f
+    );
 
-    int uvw_duty[3] = {0, 0, 0};
+//     /*
+//      * dq_out：人为给定的旋转电压矢量。
+//      * ab_out：Park 反变换之后的 alpha/beta 电压矢量。
+//      * uvw_out：最终转换成三相 U/V/W 的电压指令。
+//      */
+//     foc_dq_float_t dq_out = {0.0f, 0.0f};
+//     foc_ab_float_t ab_out = {0.0f, 0.0f};
+//     foc_uvw_float_t uvw_out = {0.0f, 0.0f, 0.0f};
 
-    /* 当前电角度，单位：度。 */
-    float elec_theta_deg = 0.0f;
+//     int uvw_duty[3] = {0, 0, 0};
 
-    /* 当前电角度，单位：弧度。sinf/cosf 使用弧度。 */
-    float elec_theta_rad = 0.0f;
+//     /* 当前电角度，单位：度。 */
+//     float elec_theta_deg = 0.0f;
 
-    /*
-     * 配置三相逆变器 PWM。
-     * 这个 inverter_config_t 来自 esp_svpwm 组件。
-     * 它会帮你配置 MCPWM timer、operator、comparator、generator、deadtime 等。
-     */
-    inverter_config_t cfg = {
-        .timer_config = {
-            .group_id = 0,
-            .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
-            .resolution_hz = EXAMPLE_FOC_MCPWM_TIMER_RESOLUTION_HZ,
+//     /* 当前电角度，单位：弧度。sinf/cosf 使用弧度。 */
+//     float elec_theta_rad = 0.0f;
 
-            /*
-             * UP_DOWN 是中心对齐 PWM。
-             * 中心对齐 PWM 相比边沿对齐 PWM，通常电磁噪声和谐波表现更好，
-             * 在电机控制里很常用。
-             */
-            .count_mode = MCPWM_TIMER_COUNT_MODE_UP_DOWN,
-            .period_ticks = EXAMPLE_FOC_MCPWM_PERIOD,
-        },
-        .operator_config = {
-            .group_id = 0,
-        },
-        .compare_config = {
-            /*
-             * update_cmp_on_tez = true：
-             * 在定时器计数到 0 的事件更新比较值。
-             * 这样可以避免 PWM 周期中间突然改占空比造成毛刺。
-             */
-            .flags.update_cmp_on_tez = true,
-        },
-        .gen_gpios = {
-            {EXAMPLE_FOC_PWM_UH_GPIO, EXAMPLE_FOC_PWM_UL_GPIO},
-            {EXAMPLE_FOC_PWM_VH_GPIO, EXAMPLE_FOC_PWM_VL_GPIO},
-            {EXAMPLE_FOC_PWM_WH_GPIO, EXAMPLE_FOC_PWM_WL_GPIO},
-        },
-        .dt_config = {
-            /*
-             * 上升沿死区。
-             * 死区用于避免同一相的上下桥臂同时导通，防止直通烧 MOS。
-             */
-            .posedge_delay_ticks = 5,
-        },
-        .inv_dt_config = {
-            /*
-             * 下降沿死区，同时反相输出下桥臂 PWM。
-             * 这样可以得到互补 PWM。
-             */
-            .negedge_delay_ticks = 5,
-            .flags.invert_output = true,
-        },
-    };
+//     /*
+//      * 配置三相逆变器 PWM。
+//      * 这个 inverter_config_t 来自 esp_svpwm 组件。
+//      * 它会帮你配置 MCPWM timer、operator、comparator、generator、deadtime 等。
+//      */
+//     inverter_config_t cfg = {
+//         .timer_config = {
+//             .group_id = 0,
+//             .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
+//             .resolution_hz = EXAMPLE_FOC_MCPWM_TIMER_RESOLUTION_HZ,
 
-    inverter_handle_t inverter1;
-    ESP_ERROR_CHECK(svpwm_new_inverter(&cfg, &inverter1));
-    ESP_LOGI(TAG, "Inverter init OK");
+//             /*
+//              * UP_DOWN 是中心对齐 PWM。
+//              * 中心对齐 PWM 相比边沿对齐 PWM，通常电磁噪声和谐波表现更好，
+//              * 在电机控制里很常用。
+//              */
+//             .count_mode = MCPWM_TIMER_COUNT_MODE_UP_DOWN,
+//             .period_ticks = EXAMPLE_FOC_MCPWM_PERIOD,
+//         },
+//         .operator_config = {
+//             .group_id = 0,
+//         },
+//         .compare_config = {
+//             /*
+//              * update_cmp_on_tez = true：
+//              * 在定时器计数到 0 的事件更新比较值。
+//              * 这样可以避免 PWM 周期中间突然改占空比造成毛刺。
+//              */
+//             .flags.update_cmp_on_tez = true,
+//         },
+//         .gen_gpios = {
+//             {EXAMPLE_FOC_PWM_UH_GPIO, EXAMPLE_FOC_PWM_UL_GPIO},
+//             {EXAMPLE_FOC_PWM_VH_GPIO, EXAMPLE_FOC_PWM_VL_GPIO},
+//             {EXAMPLE_FOC_PWM_WH_GPIO, EXAMPLE_FOC_PWM_WL_GPIO},
+//         },
+//         .dt_config = {
+//             /*
+//              * 上升沿死区。
+//              * 死区用于避免同一相的上下桥臂同时导通，防止直通烧 MOS。
+//              */
+//             .posedge_delay_ticks = 5,
+//         },
+//         .inv_dt_config = {
+//             /*
+//              * 下降沿死区，同时反相输出下桥臂 PWM。
+//              * 这样可以得到互补 PWM。
+//              */
+//             .negedge_delay_ticks = 5,
+//             .flags.invert_output = true,
+//         },
+//     };
 
-    /*
-     * 注册 MCPWM 定时器回调。
-     * on_full 表示定时器计数到峰值时触发。
-     */
-    mcpwm_timer_event_callbacks_t cbs = {
-        .on_full = inverter_update_cb,
-    };
-    ESP_ERROR_CHECK(svpwm_inverter_register_cbs(inverter1, &cbs, &update_semaphore));
+//     inverter_handle_t inverter1;
+//     ESP_ERROR_CHECK(svpwm_new_inverter(&cfg, &inverter1));
+//     ESP_LOGI(TAG, "Inverter init OK");
 
-    /* 启动 MCPWM。 */
-    ESP_ERROR_CHECK(svpwm_inverter_start(inverter1, MCPWM_TIMER_START_NO_STOP));
-    ESP_LOGI(TAG, "Inverter start OK");
+//     /*
+//      * 注册 MCPWM 定时器回调。
+//      * on_full 表示定时器计数到峰值时触发。
+//      */
+//     mcpwm_timer_event_callbacks_t cbs = {
+//         .on_full = inverter_update_cb,
+//     };
+//     ESP_ERROR_CHECK(svpwm_inverter_register_cbs(inverter1, &cbs, &update_semaphore));
 
-    /* 打开栅极驱动芯片，使能三相 MOSFET 驱动输出。 */
-    bsp_bridge_driver_init();
-    bsp_bridge_driver_enable(true);
+//     /* 启动 MCPWM。 */
+//     ESP_ERROR_CHECK(svpwm_inverter_start(inverter1, MCPWM_TIMER_START_NO_STOP));
+//     ESP_LOGI(TAG, "Inverter start OK");
 
-    ESP_LOGI(TAG, "Start open-loop FOC float calculation");
+//     /* 打开栅极驱动芯片，使能三相 MOSFET 驱动输出。 */
+//     bsp_bridge_driver_init();
+//     bsp_bridge_driver_enable(true);
 
-    while (true) {
-        /*
-         * 等待 MCPWM 回调释放信号量。
-         * 没有信号量时，这个任务会阻塞，不会一直空转浪费 CPU。
-         */
-        xSemaphoreTake(update_semaphore, portMAX_DELAY);
+//     ESP_LOGI(TAG, "Start open-loop FOC float calculation");
 
-        /*
-         * 计算每次更新电角度要增加多少度。
-         *
-         * 目标：输出 50 Hz 的旋转电压矢量。
-         * 一圈是 360 度。
-         * 如果每秒更新 10000 次，那么每次增加：
-         * 50 * 360 / 10000 = 1.8 度。
-         */
-        elec_theta_deg += (EXAMPLE_FOC_WAVE_FREQ * 360.0f) / EXAMPLE_FOC_UPDATE_FREQ_HZ;
-        elec_theta_deg = wrap_angle_deg(elec_theta_deg);
+//     while (true) {
+//         /*
+//          * 等待 MCPWM 回调释放信号量。
+//          * 没有信号量时，这个任务会阻塞，不会一直空转浪费 CPU。
+//          */
+//         xSemaphoreTake(update_semaphore, portMAX_DELAY);
 
-        /* 角度转弧度：弧度 = 角度 * pi / 180。 */
-        elec_theta_rad = elec_theta_deg * ((float)M_PI / 180.0f);
+//         /*
+//          * 计算每次更新电角度要增加多少度。
+//          *
+//          * 目标：输出 50 Hz 的旋转电压矢量。
+//          * 一圈是 360 度。
+//          * 如果每秒更新 10000 次，那么每次增加：
+//          * 50 * 360 / 10000 = 1.8 度。
+//          */
+//         elec_theta_deg += (EXAMPLE_FOC_WAVE_FREQ * 360.0f) / EXAMPLE_FOC_UPDATE_FREQ_HZ;
+//         elec_theta_deg = wrap_angle_deg(elec_theta_deg);
 
-        /*
-         * 开环 FOC 电压指令。
-         *
-         * 原始示例：
-         * dq_out.d = _IQ(EXAMPLE_FOC_WAVE_AMPL);
-         * q 默认为 0。
-         *
-         * 这里改成 float：
-         * d = EXAMPLE_FOC_WAVE_AMPL;
-         * q = 0;
-         *
-         * 注意：
-         * 这不是闭环电流控制，也没有用编码器角度。
-         * 它只是生成一个固定频率旋转的电压矢量，让电机按开环方式尝试转起来。
-         */
-        dq_out.d = EXAMPLE_FOC_WAVE_AMPL;
-        dq_out.q = 0.0f;
+//         /* 角度转弧度：弧度 = 角度 * pi / 180。 */
+//         elec_theta_rad = elec_theta_deg * ((float)M_PI / 180.0f);
 
-        /* dq -> alpha-beta。 */
-        foc_inverse_park_transform_float(elec_theta_rad, &dq_out, &ab_out);
+//         /*
+//          * 开环 FOC 电压指令。
+//          *
+//          * 原始示例：
+//          * dq_out.d = _IQ(EXAMPLE_FOC_WAVE_AMPL);
+//          * q 默认为 0。
+//          *
+//          * 这里改成 float：
+//          * d = EXAMPLE_FOC_WAVE_AMPL;
+//          * q = 0;
+//          *
+//          * 注意：
+//          * 这不是闭环电流控制，也没有用编码器角度。
+//          * 它只是生成一个固定频率旋转的电压矢量，让电机按开环方式尝试转起来。
+//          */
+//         dq_out.d = EXAMPLE_FOC_WAVE_AMPL;
+//         dq_out.q = 0.0f;
 
-#if CONFIG_ESP_FOC_USE_SVPWM
-        /*
-         * 使用 float 版本 SVPWM。
-         * 这里没有调用 IQmath 版本的 foc_svpwm_duty_calculate()。
-         */
-        foc_svpwm_zero_sequence_float(&ab_out, &uvw_out);
-#else
-        /*
-         * 使用 float 版本 SPWM。
-         * 这里没有调用 IQmath 版本的 foc_inverse_clarke_transform()。
-         */
-        foc_inverse_clarke_transform_float(&ab_out, &uvw_out);
-#endif
+//         /* dq -> alpha-beta。 */
+//         foc_inverse_park_transform_float(elec_theta_rad, &dq_out, &ab_out);
 
-        /* 把三相计算值转换成 MCPWM duty tick。 */
-        uvw_duty[0] = phase_value_to_pwm_duty(uvw_out.u);
-        uvw_duty[1] = phase_value_to_pwm_duty(uvw_out.v);
-        uvw_duty[2] = phase_value_to_pwm_duty(uvw_out.w);
+// #if CONFIG_ESP_FOC_USE_SVPWM
+//         /*
+//          * 使用 float 版本 SVPWM。
+//          * 这里没有调用 IQmath 版本的 foc_svpwm_duty_calculate()。
+//          */
+//         foc_svpwm_zero_sequence_float(&ab_out, &uvw_out);
+// #else
+//         /*
+//          * 使用 float 版本 SPWM。
+//          * 这里没有调用 IQmath 版本的 foc_inverse_clarke_transform()。
+//          */
+//         foc_inverse_clarke_transform_float(&ab_out, &uvw_out);
+// #endif
 
-        /*
-         * 输出三相 PWM 占空比。
-         * 这里的 duty 不是百分比，而是 MCPWM 比较值 tick。
-         */
-        ESP_ERROR_CHECK(svpwm_inverter_set_duty(inverter1,
-                                                uvw_duty[0],
-                                                uvw_duty[1],
-                                                uvw_duty[2]));
-    }
+//         /* 把三相计算值转换成 MCPWM duty tick。 */
+//         uvw_duty[0] = phase_value_to_pwm_duty(uvw_out.u);
+//         uvw_duty[1] = phase_value_to_pwm_duty(uvw_out.v);
+//         uvw_duty[2] = phase_value_to_pwm_duty(uvw_out.w);
 
-    /*
-     * 理论上 while(true) 不会退出。
-     * 如果以后你加了退出条件，可以走到这里关闭输出并释放资源。
-     */
-    bsp_bridge_driver_enable(false);
-    ESP_ERROR_CHECK(svpwm_inverter_start(inverter1, MCPWM_TIMER_STOP_EMPTY));
-    ESP_ERROR_CHECK(svpwm_del_inverter(inverter1));
+//         /*
+//          * 输出三相 PWM 占空比。
+//          * 这里的 duty 不是百分比，而是 MCPWM 比较值 tick。
+//          */
+//         ESP_ERROR_CHECK(svpwm_inverter_set_duty(inverter1,
+//                                                 uvw_duty[0],
+//                                                 uvw_duty[1],
+//                                                 uvw_duty[2]));
+//     }
+
+//     /*
+//      * 理论上 while(true) 不会退出。
+//      * 如果以后你加了退出条件，可以走到这里关闭输出并释放资源。
+//      */
+//     bsp_bridge_driver_enable(false);
+//     ESP_ERROR_CHECK(svpwm_inverter_start(inverter1, MCPWM_TIMER_STOP_EMPTY));
+//     ESP_ERROR_CHECK(svpwm_del_inverter(inverter1));
 }

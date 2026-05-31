@@ -9,7 +9,7 @@
  * 3. 对新手更友好，公式更直观，方便用串口打印调试。
  */
 
-#include "esp_foc_float.h"
+#include "esp_foc.h"
 
 /*
  * Clarke 变换：三相静止坐标系 U/V/W -> 两相静止坐标系 alpha/beta
