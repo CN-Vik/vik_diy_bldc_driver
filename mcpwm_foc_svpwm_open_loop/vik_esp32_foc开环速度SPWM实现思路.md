@@ -3327,3 +3327,415 @@ duty_Uc → comparator2 → generator2 → M0_IN3
 [1]: https://www.fortiortech.com/public/upload/files/20200715/20e40353f0c9715259019ff1d7ce0e54.pdf?utm_source=chatgpt.com "FD6287T"
 [2]: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/mcpwm.html?utm_source=chatgpt.com "Motor Control Pulse Width Modulator (MCPWM) - ESP32"
 [3]: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/gptimer.html?utm_source=chatgpt.com "General Purpose Timer (GPTimer) - ESP32"
+
+
+-----
+-----
+----
+可以分两种情况：
+
+**你当前这份 FOC SPWM 开环代码，不建议直接放在 Timer ISR 里跑。**
+
+原因很关键：你现在代码里面有大量 `float`、`cosf()`、`sinf()` 运算。ESP-IDF FreeRTOS 文档说明，默认不支持在中断上下文里使用 FPU，因为 FPU 寄存器状态和具体任务绑定；而且 `float` 任务还会被自动固定到某个 core。也就是说，你现在这种浮点 FOC 算法放 ISR 里，容易引入不可控问题。([Espressif Systems][1])
+
+---
+
+# 推荐做法：ISR 只发通知，FOC 放到高优先级任务里跑
+
+你的架构应该这样：
+
+```text
+GPTimer ISR
+    ↓
+只做一件事：通知 foc_task
+    ↓
+foc_task 被唤醒
+    ↓
+vfoc_open_loop_spwm_run()
+    ↓
+vfoc_get_spwm_duty()
+    ↓
+m0_fd6287_set_duty()
+    ↓
+更新 MCPWM comparator
+```
+
+也就是说：
+
+```text
+ISR 不算 FOC
+ISR 不 printf
+ISR 不 malloc
+ISR 不调用 sinf/cosf
+ISR 不做复杂逻辑
+```
+
+GPTimer 的 alarm callback 本来就是中断上下文，ESP-IDF 文档也说明 GPTimer 可以注册 alarm callback；如果需要在 cache disable 场景也能运行，需要额外启用 GPTimer ISR IRAM-Safe 配置。([Espressif Systems][2])
+
+---
+
+# 为什么不要直接在 ISR 里算？
+
+你现在的 FOC 函数是：
+
+```c
+vfoc_open_loop_spwm_run(target_rpm, uq, vbus, dt_s);
+```
+
+里面会执行：
+
+```c
+set_theta_e(target_rpm, dt_s);
+park_inv_transform(&vfoc_dt);
+clark_inv_transform(&l_temp_clark_v);
+vfoc_spwm_calc_duty(&vfoc_dt.motor_drv_val, vbus);
+```
+
+其中 `park_inv_transform()` 里面有：
+
+```c
+float cos_theta = cosf(foc_v->motor_par.theta_e);
+float sin_theta = sinf(foc_v->motor_par.theta_e);
+```
+
+这就不适合直接进 ISR。
+
+主要问题：
+
+| 问题            | 原因                         |
+| ------------- | -------------------------- |
+| `float` / FPU | ESP-IDF 默认不支持在中断上下文使用 FPU  |
+| `sinf/cosf`   | 计算耗时，不适合 ISR               |
+| 代码可能在 Flash   | Flash cache 被关闭时 ISR 可能出问题 |
+| ISR 执行太久      | 会影响 Wi-Fi、系统 tick、其它中断     |
+| 调试困难          | ISR 里不能随便 printf           |
+
+所以对你现在这个阶段，最稳妥的是：**GPTimer ISR 通知任务，任务里面跑 FOC。**
+
+---
+
+# 1. 先加一个 FOC 任务
+
+```c
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gptimer.h"
+#include "esp_log.h"
+
+#include "vik_foc.h"
+#include "m0_fd6287_pwm.h"
+
+#define TAG "M0_FOC"
+
+#define M0_FOC_CTRL_FREQ_HZ        1000
+#define M0_FOC_DT_S                (1.0f / M0_FOC_CTRL_FREQ_HZ)
+
+#define M0_CTRL_TIMER_RES_HZ       1000000
+#define M0_CTRL_ALARM_COUNT        (M0_CTRL_TIMER_RES_HZ / M0_FOC_CTRL_FREQ_HZ)
+
+#define M0_TEST_RPM                30.0f
+#define M0_TEST_UQ                 0.8f
+#define M0_TEST_VBUS               MOTOR_DRV_VBUS
+
+static TaskHandle_t s_m0_foc_task_handle = NULL;
+static gptimer_handle_t s_m0_ctrl_timer = NULL;
+```
+
+---
+
+# 2. GPTimer ISR 里只通知任务
+
+```c
+static bool m0_ctrl_timer_alarm_cb(gptimer_handle_t timer,
+                                   const gptimer_alarm_event_data_t *edata,
+                                   void *user_ctx)
+{
+    BaseType_t high_task_wakeup = pdFALSE;
+
+    if (s_m0_foc_task_handle != NULL)
+    {
+        vTaskNotifyGiveFromISR(s_m0_foc_task_handle, &high_task_wakeup);
+    }
+
+    return high_task_wakeup == pdTRUE;
+}
+```
+
+这个 ISR 里面没有浮点、没有 `printf`、没有复杂逻辑，只是通知任务。
+
+---
+
+# 3. FOC 任务里跑你的算法
+
+```c
+static void m0_foc_task(void *arg)
+{
+    spwm_duty_t duty;
+
+    while (1)
+    {
+        /*
+         * 等待 GPTimer 中断通知。
+         * 每来一次通知，就执行一次 FOC 控制周期。
+         */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        /*
+         * 1. 开环 FOC + SPWM 运算
+         */
+        vfoc_open_loop_spwm_run(M0_TEST_RPM,
+                                M0_TEST_UQ,
+                                M0_TEST_VBUS,
+                                M0_FOC_DT_S);
+
+        /*
+         * 2. 获取三相 duty
+         */
+        duty = vfoc_get_spwm_duty();
+
+        /*
+         * 3. 更新 MCPWM compare
+         *
+         * duty_Ua -> M0_IN1
+         * duty_Ub -> M0_IN2
+         * duty_Uc -> M0_IN3
+         */
+        m0_fd6287_set_duty(duty.duty_Ua,
+                           duty.duty_Ub,
+                           duty.duty_Uc);
+    }
+}
+```
+
+这就是你现在最推荐的执行方式。
+
+---
+
+# 4. 启动 FOC 控制定时器
+
+```c
+esp_err_t m0_foc_control_start(void)
+{
+    /*
+     * 1. 创建 FOC 任务。
+     * 任务固定到 core 1，避免浮点任务在双核之间乱跑。
+     */
+    xTaskCreatePinnedToCore(m0_foc_task,
+                            "m0_foc_task",
+                            4096,
+                            NULL,
+                            20,
+                            &s_m0_foc_task_handle,
+                            1);
+
+    /*
+     * 2. 创建 GPTimer。
+     * 1MHz 分辨率，1 tick = 1us。
+     */
+    gptimer_config_t timer_config = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = M0_CTRL_TIMER_RES_HZ,
+    };
+
+    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &s_m0_ctrl_timer));
+
+    /*
+     * 3. 设置周期 alarm。
+     * 1kHz 控制频率时：
+     * alarm_count = 1000000 / 1000 = 1000us
+     */
+    gptimer_alarm_config_t alarm_config = {
+        .reload_count = 0,
+        .alarm_count = M0_CTRL_ALARM_COUNT,
+        .flags.auto_reload_on_alarm = true,
+    };
+
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(s_m0_ctrl_timer, &alarm_config));
+
+    /*
+     * 4. 注册 GPTimer callback。
+     */
+    gptimer_event_callbacks_t cbs = {
+        .on_alarm = m0_ctrl_timer_alarm_cb,
+    };
+
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(s_m0_ctrl_timer,
+                                                     &cbs,
+                                                     NULL));
+
+    /*
+     * 5. 启动 GPTimer。
+     */
+    ESP_ERROR_CHECK(gptimer_enable(s_m0_ctrl_timer));
+    ESP_ERROR_CHECK(gptimer_start(s_m0_ctrl_timer));
+
+    ESP_LOGI(TAG, "M0 FOC control started, freq=%d Hz", M0_FOC_CTRL_FREQ_HZ);
+
+    return ESP_OK;
+}
+```
+
+---
+
+# 5. app_main 里执行顺序
+
+```c
+void app_main(void)
+{
+    /*
+     * 1. 初始化 FOC 参数
+     */
+    vfoc_init();
+
+    /*
+     * 2. 初始化 MCPWM 3 路输出
+     * GPIO -> M0_IN1 / M0_IN2 / M0_IN3
+     */
+    m0_fd6287_mcpwm_init();
+
+    /*
+     * 3. 启动 GPTimer 周期控制
+     */
+    m0_foc_control_start();
+}
+```
+
+---
+
+# 6. 这种方式的实时性够不够？
+
+你现在是开环 SPWM，先低速测试：
+
+```c
+M0_FOC_CTRL_FREQ_HZ = 1000
+M0_TEST_RPM = 10 ~ 30
+M0_TEST_UQ = 0.5 ~ 0.8
+```
+
+这个方式够用。
+
+如果后面你要跑更高速度，比如几百 RPM 以上，可以把控制频率提高：
+
+```c
+#define M0_FOC_CTRL_FREQ_HZ 5000
+```
+
+或者：
+
+```c
+#define M0_FOC_CTRL_FREQ_HZ 10000
+```
+
+但是注意：频率越高，`sinf/cosf` 的负担越大。ESP32/ESP32-S3 虽然有单精度 FPU，但官方性能建议里也提到，浮点计算通常仍比整数慢，`double` 更是软件实现，耗时更大。([Espressif Systems][3])
+
+---
+
+# 7. 那什么时候可以直接在 ISR 里做 FOC？
+
+可以，但那是后面的优化版本，不适合你当前这版代码。
+
+想直接 ISR 里跑，需要满足：
+
+```text
+1. 不用 sinf/cosf，改查表或者 CORDIC/定点
+2. 尽量不用 float，改 fixed-point
+3. 所有 ISR 调用函数放 IRAM
+4. ISR 里不 printf、不 malloc、不调用阻塞 API
+5. MCPWM 更新函数确认 ISR-safe
+6. 控制周期很短，例如 10kHz、20kHz，需要仔细测耗时
+```
+
+你现在这版是新手开环验证，没必要上来就把 FOC 放 ISR。
+
+---
+
+# 8. 更专业的执行分层
+
+可以这样理解：
+
+## 新手阶段，推荐
+
+```text
+GPTimer ISR -> 通知任务 -> 任务算 FOC -> 更新 MCPWM
+```
+
+优点：
+
+```text
+安全
+好调试
+不容易踩 ISR/FPU/IRAM 的坑
+```
+
+缺点：
+
+```text
+有一点任务调度延迟
+```
+
+但是你现在 1kHz 开环低速测试完全可以接受。
+
+---
+
+## 中级阶段
+
+```text
+MCPWM timer event -> 通知任务
+任务计算下一周期 duty
+MCPWM comparator 在 TEZ 更新
+```
+
+这个能让 duty 更新和 PWM 周期更同步。
+
+你之前 MCPWM comparator 设置：
+
+```c
+.flags.update_cmp_on_tez = true
+```
+
+这个是对的，意思是 compare 值在 timer 到 0 的时候更新，避免半周期突然改 duty。MCPWM 的 comparator/generator 本来就是用来根据 timer 事件和 compare 事件产生 PWM 输出的。([Espressif Systems][4])
+
+---
+
+## 高级阶段
+
+```text
+MCPWM ISR 里直接算 FOC
+立即写下一周期 compare
+```
+
+这个适合成熟项目，不适合你现在第一版。
+
+---
+
+# 9. 你现在就按这个结论做
+
+**不要把 `vfoc_open_loop_spwm_run()` 直接放 GPTimer ISR 里。**
+
+你应该这样做：
+
+```text
+GPTimer ISR:
+    vTaskNotifyGiveFromISR()
+
+FOC Task:
+    vfoc_open_loop_spwm_run()
+    vfoc_get_spwm_duty()
+    m0_fd6287_set_duty()
+```
+
+这套结构对你现在的硬件也正好：
+
+```text
+duty_Ua -> MCPWM -> M0_IN1 -> FD6287 -> M0_OUT1
+duty_Ub -> MCPWM -> M0_IN2 -> FD6287 -> M0_OUT2
+duty_Uc -> MCPWM -> M0_IN3 -> FD6287 -> M0_OUT3
+```
+
+一句话：**Timer ISR 只负责“打节拍”，FOC Task 负责“算 duty”，MCPWM 负责“输出三相 PWM”。**
+
+[1]: https://docs.espressif.com/projects/esp-idf/en/v5.1.2/esp32/api-reference/system/freertos_idf.html?utm_source=chatgpt.com "FreeRTOS (ESP-IDF) - ESP32"
+[2]: https://docs.espressif.com/projects/esp-idf/en/v5.1.2/esp32/api-reference/kconfig.html?highlight=freertos_fpu_in_isr&utm_source=chatgpt.com "Project Configuration - ESP32 - — ESP-IDF Programming ..."
+[3]: https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/performance/speed.html?utm_source=chatgpt.com "Speed Optimization - ESP32-S3 - — ESP-IDF ..."
+[4]: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/mcpwm.html?utm_source=chatgpt.com "Motor Control Pulse Width Modulator (MCPWM) - ESP32"

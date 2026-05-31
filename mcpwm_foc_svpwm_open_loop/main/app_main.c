@@ -28,6 +28,8 @@
  */
 #include "svpwm/esp_svpwm.h"
 
+#include "m0_fd6287_pwm.h"
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
@@ -344,6 +346,7 @@ bool inverter_update_cb(mcpwm_timer_handle_t timer,
 
 extern void vfoc_init(void);
 extern void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
+extern void gptimer_creat_main(void);
 
 void app_main(void)
 {
@@ -359,13 +362,25 @@ void app_main(void)
         ESP_LOGE(TAG, "Create update semaphore failed");
         return;
     }
+    
+    gptimer_creat_main();/*创建定时器*/
 
+    /*
+     * 1. 初始化 FOC 参数。
+     * 里面设置 pole_pairs = 7。
+     */
     vfoc_init();
-    vfoc_open_loop_spwm_run( 0.0f,
-                            0.0f,
-                            0.0f,
-                            0.0f
-    );
+
+    /*
+     * 2. 初始化 MCPWM。
+     * 输出到 M0_IN1 / M0_IN2 / M0_IN3。
+     */
+    m0_fd6287_mcpwm_init();
+
+    /*
+     * 3. 启动 GPTimer 周期控制。
+     */
+    m0_fd6287_foc_start();
 
 //     /*
 //      * dq_out：人为给定的旋转电压矢量。

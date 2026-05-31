@@ -10,7 +10,9 @@
  */
 #include "vik_foc.h"
 #include <math.h>
+#include "esp_log.h"
 
+static const char *TAG = "vik_foc:";
 
 
 /**
@@ -64,7 +66,7 @@ void vfoc_init(void)
  * theta_e target_rpm：目标转速（转/分钟） 
  * dt_s：距离上一次调用的时间间隔（秒）
  * 
- * @param target_rpm target_rpm
+ * @param target_rpm target_rpm (r/min） 
  * @param dt_s 距离上一次调用的时间间隔（秒）
  */
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s)
@@ -143,9 +145,10 @@ motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v)
 
 /**
  * @brief 帕克逆变换(parker_inverse_transform)
+ *   输入Id,Iq, 输出I_alpha,I_beta
  * 
  * @param foc_v (foc_value) 帕克逆变换参数值 Ud,Uq和电角度等数据
- * @return clark_parm_t: I_alpha,I_beta
+ * @return clark_parm_t: 输出I_alpha,I_beta
  * 
  *  * 公式：
  * alpha = d * cos(theta) - q * sin(theta)
@@ -285,9 +288,24 @@ void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s)
      */
     vfoc_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
 
+    /*如果 sum 接近 0，说明逆 Clarke 输出也正常。*/
+    ESP_LOGI(TAG, "UVW: %.3f, %.3f, %.3f, sum=%.3f",
+        vfoc_dt.motor_drv_val.Ua,
+        vfoc_dt.motor_drv_val.Ub,
+        vfoc_dt.motor_drv_val.Uc,
+        vfoc_dt.motor_drv_val.Ua +
+        vfoc_dt.motor_drv_val.Ub +
+        vfoc_dt.motor_drv_val.Uc
+    );
+
     /*
      * 5. SPWM：Ua/Ub/Uc -> duty_Ua/duty_Ub/duty_Uc
      */
     vfoc_dt.motor_drv_val.spwm_duty_val =
         vfoc_spwm_calc_duty(&vfoc_dt.motor_drv_val, vbus);
+}
+
+spwm_duty_t vfoc_get_spwm_duty(void)
+{
+    return vfoc_dt.motor_drv_val.spwm_duty_val;
 }

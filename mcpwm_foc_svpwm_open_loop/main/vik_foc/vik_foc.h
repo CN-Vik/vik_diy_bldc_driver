@@ -18,7 +18,6 @@
 #define SQRT3               1.7320508075688772f
 #define FOC_PI              3.14159265358979323846f
 #define FOC_2PI             6.28318530717958647692f
-#define MOTOR_DRV_VBUS      12.0f  /* 12V */
 
 // 角度 → 弧度
 #define FOC_DEG_TO_RAD(angle) ((angle) * FOC_PI / 180.0f)
@@ -119,7 +118,7 @@ motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v);
 clark_parm_t park_inv_transform(const foc_data_t *foc_v);
 spwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus);
 void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
-
+spwm_duty_t vfoc_get_spwm_duty(void);
 
 
 #endif
