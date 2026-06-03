@@ -59,6 +59,7 @@
  * ESP_LOGI / ESP_LOGW / ESP_LOGE 等日志宏都在这里。
  */
 #include "esp_log.h"
+#include <inttypes.h>
 
 #include "esp_timer.h"
 
@@ -281,11 +282,10 @@ void gptimer_creat_main(void)
         if (xQueueReceive(gptimer_queue, &ele, pdMS_TO_TICKS(2000))) {
 
             time_us = esp_timer_get_time();
-            ESP_LOGI(TAG, "gpTimer_reloaded, count[%llu],time_stamp:%d",
+            ESP_LOGI(TAG, "gpTimer_reloaded, count[%llu],time_stamp:%llu",
                 ele.event_count,
                 time_us
             );
-
             /* 收到一次事件，次数减 1 */
             record--;
         } else {
