@@ -36,8 +36,8 @@
 #define VFOC_PWM_DUTY_MIN      0.02f
 #define VFOC_PWM_DUTY_MAX      0.98f
 
-#define USE_FOC_SPWM
-// #define USE_FOC_SVPWM
+// #define USE_FOC_SPWM
+#define USE_FOC_SVPWM
 
 /*
  * 浮点计算保护阈值。
