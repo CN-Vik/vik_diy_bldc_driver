@@ -82,8 +82,8 @@ compare范围：大约 0 ~ 500
     中速测试	    300 ~ 800 rpm	2.0 ~ 3.0V	建议 FOC 控制频率提高到 5kHz
     高速测试	    800 ~ 1300 rpm	3.0 ~ 4.0V	建议 FOC 控制频率提高到 10kHz，必须斜坡启动
  */
-#define M0_TEST_RPM                300.0f // (r/min）
-#define M0_TEST_UQ                 2.0f /*3.8f = 3.8V*/
+#define M0_TEST_RPM                30.0f // (r/min）
+#define M0_TEST_UQ                 0.8f /*3.8f = 3.8V*/
 #define MOTOR_DRV_VBUS             12.0f  /* 12V */
 
 

@@ -395,13 +395,13 @@ vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
     * 这里打印的是 SVPWM 注入零序之后的三相电压。
     * 注意：这个 sum 不一定等于 0。
     */
-    ESP_LOGI(TAG,"SVPWM UVW: %.3f,%.3f,%.3f,%.3f,%.3f \r\n",
-            ua,
-            ub,
-            uc,
-            zero_offset,
-            ua + ub + uc
-    );
+    // ESP_LOGI(TAG,"SVPWM UVW: %.3f,%.3f,%.3f,%.3f,%.3f \r\n",
+    //         ua,
+    //         ub,
+    //         uc,
+    //         zero_offset,
+    //         ua + ub + uc
+    // );
 
     /*
      * 电压 -> duty。
@@ -597,14 +597,14 @@ void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s)
     vfoc_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
 
     /*如果 sum 接近 0，说明逆 Clarke 输出也正常。*/
-    ESP_LOGI(TAG, "UVW: %.3f, %.3f, %.3f, sum=%.3f",
-        vfoc_dt.motor_drv_val.Ua,
-        vfoc_dt.motor_drv_val.Ub,
-        vfoc_dt.motor_drv_val.Uc,
-        vfoc_dt.motor_drv_val.Ua +
-        vfoc_dt.motor_drv_val.Ub +
-        vfoc_dt.motor_drv_val.Uc
-    );
+    // ESP_LOGI(TAG, "UVW: %.3f, %.3f, %.3f, sum=%.3f",
+    //     vfoc_dt.motor_drv_val.Ua,
+    //     vfoc_dt.motor_drv_val.Ub,
+    //     vfoc_dt.motor_drv_val.Uc,
+    //     vfoc_dt.motor_drv_val.Ua +
+    //     vfoc_dt.motor_drv_val.Ub +
+    //     vfoc_dt.motor_drv_val.Uc
+    // );
 
     /*
      * 5. SPWM：Ua/Ub/Uc -> duty_Ua/duty_Ub/duty_Uc
