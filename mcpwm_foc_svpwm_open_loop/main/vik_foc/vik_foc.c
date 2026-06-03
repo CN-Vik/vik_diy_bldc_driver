@@ -39,6 +39,7 @@ KV值： 110KV
 
 /*viK_foc_data变量*/
 foc_data_t vfoc_dt={0};
+foc_pid_t vfoc_pid_dt={0};
 
 
 

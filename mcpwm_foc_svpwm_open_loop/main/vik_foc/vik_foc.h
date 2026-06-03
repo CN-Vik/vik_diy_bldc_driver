@@ -132,6 +132,18 @@ typedef struct
 }foc_data_t;
 
 
+typedef struct 
+{
+    float kp;
+    float ki;
+    float kd;
+    float err_v;/*误差值*/
+    float exp_v;/*期望值*/
+
+}foc_pid_t;
+
+
+
 /**
  * @brief SVPWM 运行状态
  */
