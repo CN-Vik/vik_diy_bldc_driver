@@ -19,13 +19,13 @@
 #define FOC_PI              3.14159265358979323846f
 #define FOC_2PI             6.28318530717958647692f
 
+// 角度 → 弧度
+#define FOC_DEG_TO_RAD(deg)     ( ( ((float)deg) * FOC_PI ) / 180.0f )
+
 // √3/2 的值（约 0.8660），FOC 算法中常用的固定系数
 #define FOC_SQRT3_DIV_2        0.8660254037844386f
 // 2/√3 的值（约 1.1547），FOC 算法中常用的固定系数
 #define FOC_2_DIV_SQRT3        1.1547005383792515f
-
-// 角度 → 弧度
-#define FOC_DEG_TO_RAD(angle) ((angle) * FOC_PI / 180.0f)
 
 /*
  * 量产级 PWM 占空比保护。

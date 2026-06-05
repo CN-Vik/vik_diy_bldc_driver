@@ -41,6 +41,25 @@ KV值： 110KV
 foc_data_t vfoc_dt={0};
 foc_pid_t vfoc_pid_dt={0};
 
+/**
+ * @brief 传入角度制数据，把机械角度转化为弧度制
+ * 
+ * @param parm_angle 
+ */
+void set_vfoc_theta_m(float parm_angle)
+{
+    vfoc_dt.motor_par.theta_m = FOC_DEG_TO_RAD(parm_angle);
+}
+
+/**
+ * @brief 获取FOC的机械角度(弧度制)
+ * 
+ * @return float 
+ */
+float get_vfoc_theta_m_rad(void)
+{
+    return ((float) vfoc_dt.motor_par.theta_m );
+}
 
 
 /**

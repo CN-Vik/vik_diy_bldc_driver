@@ -7,6 +7,10 @@
 #include <stdlib.h>
 #include "as5600.h"
 #include "driver/i2c_master.h"
+#include "esp_log.h"
+
+static const char *TAG = "AS5600_C";
+
 
 /** Device I2C address (7-bit)*/
 #define AS5600_I2C_ADDRESS              0x36
@@ -80,6 +84,7 @@ esp_err_t as5600_new_sensor(i2c_master_bus_handle_t bus, const as5600_i2c_config
     esp_err_t ret = i2c_master_bus_add_device(bus, &dev_config, &dev->dev_handle);
     if (ret != ESP_OK) {
         free(dev);
+        ESP_LOGE(TAG,"i2c_master_bus_add_device_failed! \r\n");
         return ret;
     }
 

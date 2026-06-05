@@ -70,8 +70,6 @@ as5600_test_conf_readback();      // 测试配置寄存器读写
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "AS5600";
-
 #define AS5600_CHECK_CONF_FIELD_EQ(field)                          \
     do                                                             \
     {                                                              \
@@ -115,7 +113,7 @@ static const char *TAG = "AS5600";
  *
  * 100 * 1000 = 100000 Hz = 100 kHz
  */
-#define I2C_MASTER_FREQ_HZ 100 * 1000 /* 100KHZ */
+#define I2C_MASTER_FREQ_HZ 399 * 1000 /* 399KHZ */
 
 /* ========================== 磁铁状态字符串表 ========================== */
 
@@ -162,6 +160,15 @@ static const char *const s_as5600_magnet_status_str[] = {
  * 这里允许 ±5 度范围。
  */
 #define AS5600_ZERO_CAL_TOL_DEG 5.0f
+
+static const char *TAG = "AS5600";
+
+extern void set_vfoc_theta_m(float parm_angle);
+extern float get_vfoc_theta_m_rad(void);
+
+
+
+
 
 /*
  * 判断角度是否接近 0 度，或者接近 360 度。
@@ -488,10 +495,11 @@ static int as5600_test_get_angle(void)
          * magnet status：
          * - 磁铁状态
          */
-        printf("AS5600 raw: %u, degrees: %.2f, magnet status: %s\n",
-               (unsigned)raw,
-               (double)degrees,
-               status_str);
+
+        ESP_LOGI(TAG, "AS5600_raw: %u, degrees: %.2f, magnet status: %s\n",
+                 (unsigned)raw,
+                 (float)degrees,
+                 status_str);
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -868,38 +876,425 @@ void test_config_wr(void)
     as5600_test_deinit();
 }
 
-/* ========================== AS5600 测试入口函数 ========================== */
-
-/*
- * AS5600 测试入口。
+/**
+ * @brief 读取 电机编码器AS5600 当前角度
  *
- * 这个函数不是标准 ESP-IDF 的 app_main()，
- * 而是 as5600_app_main()。
- *
- * 说明：
- * 如果你的工程里真正的入口是 app_main()，
- * 那么需要在 app_main() 里面调用 as5600_app_main()，
- * 或者直接把这个函数改名为 app_main()。
+ * @param angle_deg 输出角度，范围 0~360
+ * @return esp_err_t 0 表示读取成功
  */
-void as5600_demo_main(void)
+esp_err_t motor_encoder_get_angle(float *angle_deg)
 {
-    /*
-     * 打印启动 Logo。
-     * 只是为了串口显示好看，没有实际功能影响。
-     */
-    printf("  ___   ____ _____ ___  ___ \n");
-    printf(" / _ \\ / ___|_   _/ _ \\| __|\n");
-    printf("| (_) |\\___ \\ | || | | | _| \n");
-    printf(" \\___/ |___/ |_||_| |_|___|\n");
-    printf(" Angle Sensor Test\n\n");
+
+    if (angle_deg == NULL)
+    {
+        return 1;
+    }
 
     /*
-     * 启动 Unity 测试菜单。
+     * raw 用来保存 AS5600 的 12bit 原始角度值。
+     */
+    uint16_t raw;
+
+    /*
+     * degrees 用来保存换算后的角度值。
+     */
+    float degrees;
+
+    /*
+     * status 用来保存磁铁状态。
+     */
+    as5600_magnet_status_t status;
+
+    esp_err_t ret;
+
+    /*
+     * 读取 AS5600 原始角度值。
      *
-     * 程序运行后，串口终端会出现测试菜单，
-     * 可以选择运行某一个测试用例，或者运行全部测试。
+     * 如果这里失败，可能原因：
+     * - AS5600 没接好
+     * - I2C 地址不对
+     * - SDA/SCL 接反
+     * - 没有上拉电阻
+     * - AS5600 没供电
      */
-    // unity_run_menu();
+    ret = as5600_get_angle_raw(as5600, &raw);
 
-    test_angle();
+    /*
+     * 如果读原始角度失败，说明设备可能没有 ACK。
+     *
+     * 这里没有用 TEST_ASSERT，而是直接打印后 return。
+     * 这样做的效果是：
+     * - 设备没连接时，不让整个测试硬崩
+     * - 打印提示方便排查硬件连接
+     */
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "AS5600_not_connected_or_no_ack!\r\n");
+        return 2;
+    }
+
+    /*
+     * 读取角度，并换算成角度单位 degree。
+     *
+     * 驱动内部一般会做类似换算：
+     * degrees = raw * 360.0 / 4096.0
+     */
+    ret = as5600_get_angle_degrees(as5600, &degrees);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "AS5600_not_connected_or_no_ack!\r\n");
+        return 3;
+    }
+
+    /*
+     * 读取磁铁状态。
+     *
+     * 角度值是否可靠，很大程度取决于磁铁状态是否 OK。
+     */
+    ret = as5600_get_magnet_status(as5600, &status);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "AS5600_not_connected_or_no_ack!\r\n");
+        return 4;
+    }
+
+    /*
+     * 根据 status 枚举值，从字符串表中取出对应文本。
+     *
+     * 这里做了边界判断：
+     * 如果 status 超过字符串表范围，就显示 unknown，避免数组越界。
+     */
+    const char *status_str = ((unsigned)status < AS5600_MAGNET_STATUS_STR_COUNT)
+                                 ? s_as5600_magnet_status_str[status]
+                                 : "unknown";
+    if(status!=AS5600_MAGNET_OK)
+    {
+        ESP_LOGE(TAG, "magnet_status_failed: %s\r\n",
+            status_str
+        );
+        return 5;
+    }
+
+    /*
+     * 打印当前 AS5600 状态：
+     *
+     * raw：
+     * - 原始角度值
+     * - 0 ~ 4095
+     *
+     * degrees：
+     * - 换算后的角度
+     * - 0 ~ 360 度
+     *
+     * magnet status：
+     * - 磁铁状态
+     */
+    // ESP_LOGI(TAG, "AS5600_raw: %u, degrees: %.2f, magnet status: %s\n",
+    //          (unsigned)raw,
+    //          (float)degrees,
+    //          status_str);
+    *angle_deg = (float)degrees;
+
+    return 0;
+}
+
+static void motor_encoder_angle_task(void *arg)
+{
+    float angle = 0.0f;
+
+    while (1)
+    {
+        if ( !motor_encoder_get_angle(&angle) )
+        {
+            set_vfoc_theta_m(angle);/*设置VFOC的机械角度数据*/
+
+            ESP_LOGI(TAG, "motor_angle = %.2f deg, rad:%.2f",
+                angle,
+                get_vfoc_theta_m_rad()
+            );
+
+        }else{
+
+            ESP_LOGE(TAG, "motor_encoder_get_angle_failed!\r\n");
+        }
+        
+
+        /*
+         * 调试阶段 100ms 读一次就够了。
+         * 不要一开始就 1ms 打印一次，会把串口刷爆。
+         */
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+/**
+ * @brief 电机编码器AS5600零点位置校准
+ *
+ * @return uint8_t 0:OK, other:failed!
+ */
+uint8_t motor_encoder_zero_point_calib(void)
+{
+    esp_err_t ret;
+    as5600_magnet_status_t status;
+
+    /*
+     * 先读取磁铁状态。
+     *
+     * 零点校准必须在磁铁状态正常时才有意义。
+     */
+    ret = as5600_get_magnet_status(as5600, &status);
+
+    /*
+     * 如果磁铁状态读取失败，说明 I2C 通信或者设备状态异常。
+     * 这里直接跳过零点校准测试。
+     */
+    if (ret != ESP_OK)
+    {
+        printf("AS5600 magnet status read failed, skip zero calibration check\n");
+        return 1;
+    }
+
+    /*
+     * 如果磁铁状态不是 OK，也跳过测试。
+     *
+     * 因为磁场太弱、太强、没检测到磁铁时，
+     * 读出来的角度不可靠，做零点校准没有意义。
+     */
+    if (status != AS5600_MAGNET_OK)
+    {
+        printf("AS5600 magnet not OK (status=%d), skip zero calibration check\n", (int)status);
+        return 2;
+    }
+
+    /*
+     * degrees_before 保存校准前角度。
+     */
+    float degrees_before;
+
+    /*
+     * 读取校准前的角度。
+     */
+    ret = as5600_get_angle_degrees(as5600, &degrees_before);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "as5600_get_angle_degrees_failed!\r\n");
+        return 3;
+    }
+
+    /*
+     * 打印校准前角度，方便观察校准效果。
+     */
+    printf("AS5600_before_ZPOS_cal: degrees=%.2f\n", (double)degrees_before);
+
+    /*
+     * 设置当前位置为零点。
+     *
+     * 注意：
+     * 这个函数具体是写 AS5600 的 ZPOS 寄存器，
+     * 还是只在驱动内部做软件零点偏移，
+     * 要看 as5600_set_zero_position() 的驱动实现。
+     */
+    ret = as5600_set_zero_position(as5600);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "as5600_set_zero_position_Failed!\r\n");
+        return 4;
+    }
+
+    /*
+     * 设置零点后等待一小段时间。
+     *
+     * 原因：
+     * AS5600 内部可能有滤波器，
+     * 写入 ZPOS 后 ANGLE 输出不一定立刻稳定。
+     *
+     * 这里延时 20ms，让滤波后的角度输出稳定一下。
+     */
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    /*
+     * degrees 保存校准后的角度。
+     */
+    float degrees;
+
+    /*
+     * 读取校准后的角度。
+     */
+    ret = as5600_get_angle_degrees(as5600, &degrees);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "as5600_get_angle_degrees_Failed!\r\n");
+        return 5;
+    }
+
+    /*
+     * 打印校准后的角度。
+     *
+     * 期望值：
+     * - 接近 0 度
+     * - 或者接近 360 度
+     */
+    printf("AS5600_after_ZPOS_cal: degrees=%.2f (expect ~0 or ~360 wrap)\n",
+           (double)degrees);
+
+    /*
+     * 判断校准后的角度是否接近 0 度或者接近 360 度。
+     *
+     * 如果不满足，测试失败，并打印错误信息。
+     */
+    if (!as5600_degrees_near_zero_or_wrap_360(degrees, AS5600_ZERO_CAL_TOL_DEG))
+    {
+        ESP_LOGE(TAG, "angle_after_zero_calibration_failed, degrees=%.2f", (double)degrees);
+        return 6;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 电机编码器AS5600初始化
+ *
+ * @return uint8_t 0:OK, other failed!
+ */
+uint8_t as5600_init(void)
+{
+    esp_err_t ret;
+
+    /*
+     * I2C Master 总线配置结构体。
+     *
+     * 这里配置的是 ESP32 作为 I2C 主机：
+     * - 使用哪个 I2C 控制器
+     * - SDA 引脚
+     * - SCL 引脚
+     * - 时钟源
+     * - 毛刺过滤
+     * - 是否开启内部上拉
+     */
+    i2c_master_bus_config_t bus_config = {
+        /*
+         * 使用 I2C_NUM_0 控制器。
+         */
+        .i2c_port = I2C_MASTER_NUM,
+
+        /*
+         * SDA 数据线 GPIO。
+         */
+        .sda_io_num = I2C_MASTER_SDA_IO,
+
+        /*
+         * SCL 时钟线 GPIO。
+         */
+        .scl_io_num = I2C_MASTER_SCL_IO,
+
+        /*
+         * I2C 时钟源。
+         *
+         * I2C_CLK_SRC_DEFAULT 表示使用 ESP-IDF 默认推荐的时钟源。
+         */
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+
+        /*
+         * 毛刺过滤参数。
+         *
+         * I2C 信号线上可能会有很短的干扰毛刺。
+         * glitch_ignore_cnt = 7 表示过滤掉非常短的脉冲干扰。
+         */
+        .glitch_ignore_cnt = 7,
+
+        /*
+         * 使能 ESP32 内部上拉电阻。
+         *
+         * I2C 总线是开漏结构，SDA/SCL 必须有上拉。
+         *
+         * 注意：
+         * 内部上拉通常比较弱，正式硬件建议外接 4.7k 左右上拉电阻。
+         */
+        .flags.enable_internal_pullup = true,
+    };
+
+    /*
+     * 创建 I2C Master 总线。
+     *
+     * 成功后，bus_handle 会被赋值。
+     */
+    ret = i2c_new_master_bus(&bus_config, &bus_handle);
+
+    /*
+     * Unity 断言：
+     * 判断 i2c_new_master_bus() 的返回值是否等于 ESP_OK。
+     *
+     * 如果不等于 ESP_OK，测试直接失败。
+     */
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "i2c_new_master_bus_failed!\r\n");
+        return 1;
+    }
+
+    /*
+     * AS5600 I2C 设备配置。
+     *
+     * 这里只配置了 I2C 速度。
+     * 设备地址通常在驱动里固定为 AS5600 默认地址 0x36。
+     */
+    as5600_i2c_config_t i2c_conf = {
+        .scl_speed_hz = I2C_MASTER_FREQ_HZ};
+
+    /*
+     * 在 I2C bus 上创建 AS5600 传感器对象。
+     *
+     * 参数说明：
+     * - bus_handle：前面创建好的 I2C 总线
+     * - &i2c_conf：AS5600 的 I2C 配置
+     * - &as5600：输出参数，用来保存 AS5600 设备句柄
+     */
+    ret = as5600_new_sensor(bus_handle, &i2c_conf, &as5600);
+
+    /*
+     * 检查 AS5600 设备创建是否成功。
+     */
+    // TEST_ASSERT_EQUAL(ESP_OK, ret);
+    ESP_ERROR_CHECK(ret);
+
+    /*
+     * 检查 as5600 句柄不为空。
+     * 如果为空，说明 AS5600 设备对象没有创建成功。
+     */
+    if (as5600 == NULL)
+    {
+        ESP_LOGE(TAG, "as5600 handle is NULL");
+        return 2;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 电机编码器AS5600初始化
+ *
+ * @return uint8_t 0:OK, other failed!
+ */
+void motor_encoder_init(void)
+{
+    
+    if (as5600_init())
+    {
+        ESP_LOGE(TAG, "as5600_init_failed!\r\n");
+    }
+
+    if (motor_encoder_zero_point_calib())
+    {
+        ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
+    }
+
+    xTaskCreatePinnedToCore(
+        motor_encoder_angle_task, // 任务函数
+        "encoder_angle_task",     // 任务名
+        4096 * 2,                 // 栈大小
+        NULL,                     // 参数
+        5,                        // 优先级
+        NULL,                     // 任务句柄
+        0                         // 跑在 core 0
+    );
 }

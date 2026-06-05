@@ -10,7 +10,7 @@
 #include "driver/gptimer.h"
 #include "driver/gpio.h"
 
-#define TAG "M0_FD6287"
+static const char *TAG = "M0_FD6287";
 
 /*
  * 这三个 GPIO 对应你的硬件 M0_IN1 / M0_IN2 / M0_IN3。

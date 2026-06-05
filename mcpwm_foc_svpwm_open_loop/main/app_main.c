@@ -346,9 +346,8 @@ bool inverter_update_cb(mcpwm_timer_handle_t timer,
 
 extern void vfoc_init(void);
 extern void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
-extern void gptimer_creat_main(void);
-extern void as5600_demo_main(void);
-
+// extern void gptimer_creat_main(void);
+extern void motor_encoder_init(void);
 
 void app_main(void)
 {
@@ -364,7 +363,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Create update semaphore failed");
         return;
     }
-    as5600_demo_main();
+    motor_encoder_init();
     
     // gptimer_creat_main();/*创建定时器*/
 
