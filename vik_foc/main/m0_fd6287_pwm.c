@@ -494,6 +494,8 @@ static void m0_foc_control_task(void *arg)
 
         uq = (kp * err_angle) + (kd * kd_err_parm);
         uq *= -1;
+        /* 限制 Uq 最大输出，防止上电/大误差时力矩过猛 */
+        uq = limit_float(uq, -UQ_LIMIT, UQ_LIMIT);
 
         
         if (++log_cnt >= 100)
