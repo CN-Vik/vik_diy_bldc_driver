@@ -41,34 +41,18 @@ as5600_test_conf_readback();      // 测试配置寄存器读写
 
 #include <stdio.h>
 #include <stdbool.h>
-
-/*
- * AS5600 驱动头文件。
- * 里面一般会定义：
- * - as5600_handle_t
- * - as5600_new_sensor()
- * - as5600_get_angle_raw()
- * - as5600_get_angle_degrees()
- * - as5600_set_zero_position()
- * - as5600_get_conf()
- * - as5600_set_conf()
- */
 #include "as5600.h"
-
-/*
- * ESP-IDF 新版 I2C Master 驱动头文件。
- * 这里用的是 i2c_master_bus_handle_t 这一套新接口。
- */
 #include "driver/i2c_master.h"
-
 #include "esp_log.h"
-
-/*
- * FreeRTOS 头文件。
- * 这里主要用 vTaskDelay() 做延时。
- */
+#include <stdbool.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
+
+/*角度抖动误差*/
+#define AS5600_ANGLE_DEADBAND_DEG   0.12f
+
 
 #define AS5600_CHECK_CONF_FIELD_EQ(field)                          \
     do                                                             \
@@ -161,10 +145,14 @@ static const char *const s_as5600_magnet_status_str[] = {
  */
 #define AS5600_ZERO_CAL_TOL_DEG 5.0f
 
+
+
 static const char *TAG = "AS5600";
 
-extern void set_vfoc_theta_m(float parm_angle);
-extern float get_vfoc_theta_m_rad(void);
+extern void set_vfoc_theta_m_deg(float parm_angle);
+extern float get_vfoc_theta_m_deg(void);
+extern void set_vfoc_mech_w(float mech_w);
+void set_vfoc_mech_rpm(float mech_rm);
 
 
 
@@ -907,31 +895,31 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
 
     esp_err_t ret;
 
-    /*
-     * 读取 AS5600 原始角度值。
-     *
-     * 如果这里失败，可能原因：
-     * - AS5600 没接好
-     * - I2C 地址不对
-     * - SDA/SCL 接反
-     * - 没有上拉电阻
-     * - AS5600 没供电
-     */
-    ret = as5600_get_angle_raw(as5600, &raw);
+    // /*
+    //  * 读取 AS5600 原始角度值。
+    //  *
+    //  * 如果这里失败，可能原因：
+    //  * - AS5600 没接好
+    //  * - I2C 地址不对
+    //  * - SDA/SCL 接反
+    //  * - 没有上拉电阻
+    //  * - AS5600 没供电
+    //  */
+    // ret = as5600_get_angle_raw(as5600, &raw);
 
-    /*
-     * 如果读原始角度失败，说明设备可能没有 ACK。
-     *
-     * 这里没有用 TEST_ASSERT，而是直接打印后 return。
-     * 这样做的效果是：
-     * - 设备没连接时，不让整个测试硬崩
-     * - 打印提示方便排查硬件连接
-     */
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "AS5600_not_connected_or_no_ack!\r\n");
-        return 2;
-    }
+    // /*
+    //  * 如果读原始角度失败，说明设备可能没有 ACK。
+    //  *
+    //  * 这里没有用 TEST_ASSERT，而是直接打印后 return。
+    //  * 这样做的效果是：
+    //  * - 设备没连接时，不让整个测试硬崩
+    //  * - 打印提示方便排查硬件连接
+    //  */
+    // if (ret != ESP_OK)
+    // {
+    //     ESP_LOGE(TAG, "as5600_get_angle_raw_failed!\r\n");
+    //     return 2;
+    // }
 
     /*
      * 读取角度，并换算成角度单位 degree。
@@ -998,32 +986,311 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
     return 0;
 }
 
+
+
+/**
+ * @brief 根据当前机械角度计算电机机械角速度 deg/s
+ *
+ * @details
+ * 这个函数专门给 FOC 位置环的 D 项/阻尼项使用。
+ *
+ * 作用：
+ * 1. 根据 AS5600 当前角度计算机械角速度
+ * 2. 自动处理 0° / 360° 跳变
+ * 3. 对角速度做一阶低通滤波，减少 AS5600 角度抖动带来的 D 项噪声
+ * 4. 静止小抖动时输出 0，避免 D 项残留
+ *
+ * @param now_angle 当前机械角度，单位 deg，范围一般为 0~360
+ * @return float 机械角速度，单位 deg/s
+ */
+float get_motor_omega_deg_s_by_angle(float now_angle)
+{
+    static bool first_flag = true;          /* 第一次进入标志 */
+    static float last_angle = 0.0f;         /* 上一次角度，单位 deg */
+    static int64_t last_time_us = 0;        /* 上一次时间戳，单位 us */
+
+    static float omega_lpf = 0.0f;          /* 低通滤波后的机械角速度，单位 deg/s */
+
+    int64_t now_time_us = esp_timer_get_time();
+
+    /*
+     * 第一次进入时没有上一次角度和时间，无法计算速度。
+     * 所以只记录当前值，返回 0。
+     */
+    if (first_flag)
+    {
+        first_flag = false;
+        last_angle = now_angle;
+        last_time_us = now_time_us;
+        omega_lpf = 0.0f;
+        return 0.0f;
+    }
+
+    /*
+     * 计算本次和上次的时间差，单位 us。
+     */
+    int64_t dt_us = now_time_us - last_time_us;
+
+    /*
+     * 如果时间差异常，直接返回上一次滤波速度。
+     * 正常情况下不会进这里。
+     */
+    if (dt_us <= 0)
+    {
+        return omega_lpf;
+    }
+
+    /*
+     * 如果间隔时间太短，速度会被放大得很离谱。
+     * 比如 dt_us 只有几十 us，AS5600 角度抖一下，算出来速度会很大。
+     *
+     * 你的编码器任务是 1ms 调一次，所以这里限制最小 dt 为 500us。
+     */
+    if (dt_us < 500)
+    {
+        dt_us = 500;
+    }
+
+    /*
+     * 如果间隔时间太长，说明任务可能被阻塞过。
+     * 这时候算出来的速度不适合用于 D 项，直接弱化处理。
+     *
+     * 你的目标周期是 1ms，这里超过 20ms 就认为异常。
+     */
+    if (dt_us > 20000)
+    {
+        last_angle = now_angle;
+        last_time_us = now_time_us;
+        omega_lpf = 0.0f;
+        return 0.0f;
+    }
+
+    /*
+     * us 转成秒。
+     */
+    float dt_s = (float)dt_us / 1000000.0f;
+
+    /*
+     * 计算角度变化量。
+     *
+     * 注意：
+     * 不能直接用 now_angle - last_angle 后就结束，
+     * 因为角度有 0/360 跳变。
+     *
+     * 例如：
+     * last_angle = 359°
+     * now_angle  = 1°
+     *
+     * 实际是正向转了 2°，
+     * 不是反向转了 -358°。
+     */
+    float delta_deg = now_angle - last_angle;
+
+    if (delta_deg > 180.0f)
+    {
+        delta_deg -= 360.0f;
+    }
+    else if (delta_deg < -180.0f)
+    {
+        delta_deg += 360.0f;
+    }
+
+    /*
+     * 静止抖动死区。
+     *
+     * AS5600 是 12bit，1 LSB 大约是：
+     * 360 / 4096 = 0.0879°
+     *
+     * 所以你原来的 0.12° 大概是 1~2 个 LSB。
+     * 如果 D 项还是抖，可以把这个值改成 0.18f 或 0.25f。
+     */
+    if (fabsf(delta_deg) < AS5600_ANGLE_DEADBAND_DEG)
+    {
+        /*
+         * 关键优化：
+         * 小抖动时，不要保留上一次速度。
+         * 要让速度慢慢衰减到 0，否则 D 项会有残留力矩。
+         */
+        omega_lpf *= 0.85f;
+
+        if (fabsf(omega_lpf) < 1.0f)
+        {
+            omega_lpf = 0.0f;
+        }
+    }
+    else
+    {
+        /*
+         * 原始机械角速度，单位 deg/s。
+         */
+        float omega_raw = delta_deg / dt_s;
+
+        /*
+         * 限制异常尖峰速度。
+         * 手拧或者小电机测试阶段，先限制到 ±2000 deg/s。
+         *
+         * 2000 deg/s = 333 rpm 左右。
+         * 如果你后面高速运行，再把这个限幅加大。
+         */
+        if (omega_raw > 2000.0f)
+        {
+            omega_raw = 2000.0f;
+        }
+        else if (omega_raw < -2000.0f)
+        {
+            omega_raw = -2000.0f;
+        }
+
+        /*
+         * 一阶低通滤波。
+         *
+         * alpha 越大，速度越平滑，但响应越慢。
+         * alpha 越小，响应越快，但噪声越大。
+         *
+         * 位置环 D 项建议先用 0.85。
+         */
+        const float alpha = 0.85f;
+
+        omega_lpf = alpha * omega_lpf + (1.0f - alpha) * omega_raw;
+    }
+
+    /*
+     * 更新历史角度和时间。
+     */
+    last_angle = now_angle;
+    last_time_us = now_time_us;
+
+    /*
+     * 注意：
+     * FOC 控制周期里不要高频 ESP_LOGI。
+     * 1ms 打印会严重影响控制实时性。
+     * 需要调试时，建议 100ms 打印一次。
+     */
+#if 0
+    ESP_LOGI(TAG,
+             "last_deg:%.2f, now_deg:%.2f, diff_deg:%.2f, dt_s:%.6f, omega_lpf:%.3f",
+             last_angle,
+             now_angle,
+             delta_deg,
+             dt_s,
+             omega_lpf);
+#endif
+
+    return omega_lpf;
+}
+
+
+
+/**
+ * @brief 获取电机转速rpm(r/min)
+ * 
+ * @param now_angle 当前的角度值
+ * @return float 返回电机的转速rpm(r/min)
+ */
+float get_motor_rpm_by_angle(float now_angle)
+{
+    static bool first_flag = true;/*第一次进入的标志*/
+
+    static float last_angle = 0.0f;/*存储上一次角度值，计算时间内的角度差值*/
+    static int64_t last_time_us = 0;/*上一次时候的时间戳*/
+    static float rpm_out = 0.0f;/*输出的电机转速(r/min)*/
+    int64_t now_time_us = esp_timer_get_time();/*本次时间戳,单位us*/
+
+    if (first_flag)
+    {
+        first_flag = false;
+        last_angle = now_angle;
+        last_time_us = now_time_us;
+        return rpm_out;
+    }
+
+    int64_t dt_us = now_time_us - last_time_us;/*单位us*/
+    double dt_s = ((double)dt_us) / (1.0f*1000.0f*1000.0f);/*转化成单位s*/
+
+    float delta = now_angle - last_angle;
+
+    /*
+     * 处理 0° / 360° 跳变
+     */
+    if (delta > 180.0f)
+    {
+        delta -= 360.0f;
+    }
+    else if (delta < -180.0f)
+    {
+        delta += 360.0f;
+    }
+
+    /*检测电机是否是静止时抖动的，不计算转速*/
+    if (fabsf(delta) > AS5600_ANGLE_DEADBAND_DEG)
+    {
+        rpm_out = delta * 60.0f / (360.0f * dt_s);
+    }
+
+    // ESP_LOGI(TAG,
+    //         "last_deg:%.2f,now_deg:%.2f,diff_deg:%.2f,dt_s:%.6f,rpm:%.3f,thehold:%.2f\r\n",
+    //         last_angle,
+    //         now_angle,
+    //         delta,
+    //         dt_s,
+    //         rpm_out,
+    //         AS5600_ANGLE_DEADBAND_DEG
+    // );
+    
+    last_angle = now_angle;/*更新上次角度值*/
+    last_time_us = now_time_us;/*更新上次时间戳*/
+
+
+    return rpm_out;
+}
+
+
 static void motor_encoder_angle_task(void *arg)
 {
     float angle = 0.0f;
+    float rpm = 0.0f;
+
+    int log_cnt = 0;
 
     while (1)
     {
-        if ( !motor_encoder_get_angle(&angle) )
+        if (!motor_encoder_get_angle(&angle))
         {
-            set_vfoc_theta_m(angle);/*设置VFOC的机械角度数据*/
+            /*
+             * 设置 VFOC 的机械角度
+             */
+            set_vfoc_theta_m_deg(angle);
 
-            ESP_LOGI(TAG, "motor_angle = %.2f deg, rad:%.2f",
-                angle,
-                get_vfoc_theta_m_rad()
-            );
+            /*
+             * 每次读取角度后都计算转速
+             * 注意：不要放到 ESP_LOGI 里面算
+             */
+            set_vfoc_mech_rpm( get_motor_rpm_by_angle(angle) );
+            set_vfoc_mech_w( get_motor_omega_deg_s_by_angle(angle) );
 
-        }else{
+            /*
+             * 低频打印，比如 100 次打印一次
+             * 如果你的任务实际 10ms 一次，
+             * 那么 100 次就是大约 1 秒打印一次
+             */
+            // if (++log_cnt >= 100)
+            // {
+            //     log_cnt = 0;
 
-            ESP_LOGE(TAG, "motor_encoder_get_angle_failed!\r\n");
+            //     ESP_LOGI(TAG,
+            //         "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f",
+            //         angle,
+            //         get_vfoc_theta_m_deg(),
+            //         rpm
+            //     );
+            // }
         }
-        
+        else
+        {
+            ESP_LOGE(TAG, "motor_encoder_get_angle_failed!");
+        }
 
-        /*
-         * 调试阶段 100ms 读一次就够了。
-         * 不要一开始就 1ms 打印一次，会把串口刷爆。
-         */
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -1283,10 +1550,10 @@ void motor_encoder_init(void)
         ESP_LOGE(TAG, "as5600_init_failed!\r\n");
     }
 
-    if (motor_encoder_zero_point_calib())
-    {
-        ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
-    }
+    // if (motor_encoder_zero_point_calib())
+    // {
+    //     ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
+    // }
 
     xTaskCreatePinnedToCore(
         motor_encoder_angle_task, // 任务函数

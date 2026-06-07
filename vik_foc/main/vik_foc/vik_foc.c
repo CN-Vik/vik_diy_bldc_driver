@@ -39,42 +39,105 @@ KV值： 110KV
 
 /*viK_foc_data变量*/
 foc_data_t vfoc_dt={0};
-foc_pid_t vfoc_pid_dt={0};
+
 
 /**
- * @brief 传入角度制数据，把机械角度转化为弧度制
+ * @brief 设置FOC机械角速度w(°/s)
  * 
- * @param parm_angle 
+ * @param mech_w 机械角速度w(°/s)
  */
-void set_vfoc_theta_m(float parm_angle)
+void set_vfoc_mech_w(float mech_w)
 {
-    vfoc_dt.motor_par.theta_m = FOC_DEG_TO_RAD(parm_angle);
+    vfoc_dt.motor_drv_val.mech_w = mech_w;
 }
 
 /**
- * @brief 获取FOC的机械角度(弧度制)
+ * @brief 获取FOC机械角速度w(°/s)
+ * 
+ * @return float 机械角速度w(°/s)
+ */
+float get_vfoc_mech_w(void)
+{
+    return ((float) vfoc_dt.motor_drv_val.mech_w );
+}
+
+
+/**
+ * @brief 设置FOC机械转速RPM(r/min)
+ * 
+ * @param mech_rm RPM(r/min)
+ */
+void set_vfoc_mech_rpm(float mech_rm)
+{
+    vfoc_dt.motor_drv_val.mech_rpm = mech_rm;
+}
+
+
+/**
+ * @brief 获取FOC机械转速RPM(r/min)
+ * 
+ * @return float 机械转速RPM(r/min)
+ */
+float get_vfoc_mech_rpm(void)
+{
+    return ((float) vfoc_dt.motor_drv_val.mech_rpm );
+}
+
+
+/**
+ * @brief 设置机械角度数据(角度制)
+ * 
+ * @param parm_angle 
+ */
+void set_vfoc_theta_m_deg(float parm_angle)
+{
+    vfoc_dt.motor_par.theta_m = parm_angle;
+}
+
+/**
+ * @brief 获取FOC的机械角度(角度制)
  * 
  * @return float 
  */
-float get_vfoc_theta_m_rad(void)
+float get_vfoc_theta_m_deg(void)
 {
     return ((float) vfoc_dt.motor_par.theta_m );
 }
 
 
 /**
- * @brief FOC电机相关参数初始化
+ * @brief vfoc获取电角度(弧度制)
  * 
+ * @return float 
  */
-void vfoc_init(void)
+float get_vfoc_theta_e_rad(void)
 {
-    /*所使用的是2208电机，极对数为7*/
-    vfoc_dt.motor_par.theta_m = 0.0f;
-    vfoc_dt.motor_par.theta_e = 0.0f;
-    vfoc_dt.motor_par.pole_pairs = 7;
-    
-    vfoc_dt.park_val.Ud = 0.0f;
-    vfoc_dt.park_val.Uq = 0.0f;
+    float elec_deg;/*电角度*/
+
+    /*
+     * 机械角度 -> 电角度
+        电角度=机械角度*电机磁极对数
+     */
+    elec_deg = get_vfoc_theta_m_deg() * vfoc_dt.motor_par.pole_pairs;
+
+    /*
+     * 限制到 0~360 度
+     */
+    while (elec_deg >= 360.0f)
+    {
+        elec_deg -= 360.0f;
+    }
+
+    while (elec_deg < 0.0f)
+    {
+        elec_deg += 360.0f;
+    }
+
+    /*
+     * 角度制 -> 弧度制
+     */
+    return FOC_DEG_TO_RAD(elec_deg);
+
 }
 
 
@@ -271,7 +334,7 @@ static int vfoc_float_is_valid(float value)
  */
 vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
                                       float vbus,
-                                      spwm_duty_t *duty_out)
+                                      pwm_duty_t *duty_out)
 {
     float alpha;
     float beta;
@@ -296,7 +359,7 @@ vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
      * 先给安全默认值。
      * 如果后面参数错误，至少输出 50% 附近，不会随机乱跳。
      */
-    spwm_duty_t duty = {
+    pwm_duty_t duty = {
         .duty_Ua = 0.5f,
         .duty_Ub = 0.5f,
         .duty_Uc = 0.5f,
@@ -513,8 +576,91 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
     svpwm_status = vfoc_svpwm_calc_duty_uab(
                         &l_temp_clark_v,
                         vbus,
-                        &vfoc_dt.motor_drv_val.spwm_duty_val
+                        &vfoc_dt.motor_drv_val.pwm_duty_val
                    );
+
+    /*
+     * 量产代码里，不建议 1ms 打一次日志。
+     * 这里只在异常时打。
+     */
+    if ((svpwm_status != VFOC_STATUS_OK) &&
+        (svpwm_status != VFOC_STATUS_SATURATED))
+    {
+        ESP_LOGE(TAG, "SVPWM error, status=%d", (int)svpwm_status);
+    }
+
+    /*
+     * 如果只是 VFOC_STATUS_SATURATED，说明电压指令过大，
+     * 算法已经自动缩放，不需要停机。
+     *
+     * 后续闭环时，可以把这个状态反馈给电压环/电流环，
+     * 做 anti-windup 防积分饱和。
+     */
+}
+
+
+
+
+/**
+ * @brief 开环电压 FOC + SVPWM
+ *
+ * 这是替代 vfoc_open_loop_spwm_run() 的量产风格版本。
+ *
+ * 注意：
+ * 这仍然是开环控制，不是完整量产 FOC。
+ * 真正量产还需要：
+ *      电流采样
+ *      电流环 PI
+ *      速度环 PI
+ *      位置/速度估算或编码器
+ *      过流/过压/欠压/堵转/温度保护
+ *
+ * 但是这个 SVPWM 调制器本身是工程化写法。
+ */
+void vfoc_set_svpwm(float uq,
+                    float ud,
+                    float vbus)
+{
+
+    clark_parm_t l_temp_clark_v = {0};
+    vfoc_status_t svpwm_status;
+
+    /*
+     * 2. 设置 dq 电压。
+     *
+     * 开环阶段：
+     *      Ud = 0
+     *      Uq = 给定测试电压
+     */
+    vfoc_dt.park_val.Uq = uq;
+    vfoc_dt.park_val.Ud = ud;
+
+    /*获取电角度弧度制*/
+    vfoc_dt.motor_par.theta_e = get_vfoc_theta_e_rad();
+
+    /*
+     * 3. 逆 Park：
+     *      输入Ud/Uq + theta_e，输出Ualpha/Ubeta
+     */
+    l_temp_clark_v = park_inv_transform(&vfoc_dt);
+
+    /*
+     * 4. 可选：保存 Ua/Ub/Uc，方便你打印调试。
+     *
+     * 注意：
+     * 真正 SVPWM duty 不依赖这里的 Ua/Ub/Uc。
+     * SVPWM 是直接用 alpha/beta 算 duty。
+     */
+    vfoc_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
+
+    /*
+     * 5. SVPWM：
+     *      Ualpha/Ubeta -> duty_Ua/duty_Ub/duty_Uc
+     */
+    svpwm_status = vfoc_svpwm_calc_duty_uab( &l_temp_clark_v,
+                                             vbus,
+                                             &vfoc_dt.motor_drv_val.pwm_duty_val
+    );
 
     /*
      * 量产代码里，不建议 1ms 打一次日志。
@@ -541,11 +687,11 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
  * 
  * @param motor_v 
  * @param vbus 
- * @return spwm_duty_t 
+ * @return pwm_duty_t 
  */
-spwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus)
+pwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus)
 {
-    spwm_duty_t duty = {0};
+    pwm_duty_t duty = {0};
 
     if ((motor_v == NULL) || (vbus <= 0.0f))
     {
@@ -629,11 +775,27 @@ void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s)
     /*
      * 5. SPWM：Ua/Ub/Uc -> duty_Ua/duty_Ub/duty_Uc
      */
-    vfoc_dt.motor_drv_val.spwm_duty_val =
+    vfoc_dt.motor_drv_val.pwm_duty_val =
         vfoc_spwm_calc_duty(&vfoc_dt.motor_drv_val, vbus);
 }
 
-spwm_duty_t vfoc_get_pwm_duty(void)
+pwm_duty_t vfoc_get_pwm_duty(void)
 {
-    return vfoc_dt.motor_drv_val.spwm_duty_val;
+    return vfoc_dt.motor_drv_val.pwm_duty_val;
+}
+
+
+/**
+ * @brief FOC电机相关参数初始化
+ * 
+ */
+void vfoc_init(void)
+{
+    /*所使用的是2208电机，极对数为7*/
+    vfoc_dt.motor_par.theta_m = 0.0f;
+    vfoc_dt.motor_par.theta_e = 0.0f;
+    vfoc_dt.motor_par.pole_pairs = 7;
+    
+    vfoc_dt.park_val.Ud = 0.0f;
+    vfoc_dt.park_val.Uq = 0.0f;
 }

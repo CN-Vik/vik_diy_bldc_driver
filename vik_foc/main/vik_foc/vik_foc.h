@@ -76,7 +76,7 @@ typedef struct
     float duty_Ua;/*实际配置到电机的占空比Ua的*/
     float duty_Ub;
     float duty_Uc;
-}spwm_duty_t;
+}pwm_duty_t;
 
 
 /**
@@ -89,7 +89,9 @@ typedef struct
     float Ua;
     float Ub;
     float Uc;
-    spwm_duty_t spwm_duty_val;
+    pwm_duty_t pwm_duty_val;
+    float mech_rpm;/*机械角度转速*/
+    float mech_w;/*机械角速度*/
 
 }motor_driver_parm_t;
 
@@ -132,15 +134,6 @@ typedef struct
 }foc_data_t;
 
 
-typedef struct 
-{
-    float kp;
-    float ki;
-    float kd;
-    float err_v;/*误差值*/
-    float exp_v;/*期望值*/
-
-}foc_pid_t;
 
 
 
@@ -173,9 +166,9 @@ void vfoc_init(void);
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s);
 motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v);
 clark_parm_t park_inv_transform(const foc_data_t *foc_v);
-spwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus);
+pwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus);
 void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
-spwm_duty_t vfoc_get_pwm_duty(void);
+pwm_duty_t vfoc_get_pwm_duty(void);
 
 /*
  * 量产级 SVPWM 核心接口：
@@ -183,7 +176,7 @@ spwm_duty_t vfoc_get_pwm_duty(void);
  */
 vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
                                       float vbus,
-                                      spwm_duty_t *duty_out);
+                                      pwm_duty_t *duty_out);
 /*
  * 开环 SVPWM 运行接口。
  */
@@ -192,6 +185,16 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
                               float vbus,
                               float dt_s);
 
+void vfoc_set_svpwm(float uq,
+                    float ud,
+                    float vbus);
+
+float get_vfoc_theta_m_deg(void);
+
+void set_vfoc_mech_w(float mech_w);
+float get_vfoc_mech_w(void);
+void set_vfoc_mech_rpm(float mech_rm);
+float get_vfoc_mech_rpm(void);
 
 
 #endif

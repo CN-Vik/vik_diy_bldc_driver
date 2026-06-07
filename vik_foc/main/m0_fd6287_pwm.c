@@ -1,3 +1,13 @@
+/**
+ * @file m0_fd6287_pwm.c
+ * @author vik (ufo281@outlook.com)
+ * @brief 
+ * @version 0.1
+ * @date 2026-06-06
+ * 
+ * @copyright Copyright (c) 2026
+ * 
+ */
 #include "m0_fd6287_pwm.h"
 #include "vik_foc.h"
 #include <stdbool.h>
@@ -9,6 +19,8 @@
 #include "driver/mcpwm_prelude.h"
 #include "driver/gptimer.h"
 #include "driver/gpio.h"
+#include "vik_foc_pid.h"
+#include <math.h>     
 
 static const char *TAG = "M0_FD6287";
 
@@ -21,9 +33,9 @@ static const char *TAG = "M0_FD6287";
 #define M0_IN3_GPIO    25
 
 /*
- * 20kHz PWM 载波。
+ * 40kHz PWM 载波。
  */
-#define M0_PWM_FREQ_HZ             20000
+#define M0_PWM_FREQ_HZ             (40 *(1000))
 
 /*
  * MCPWM 分辨率 10MHz。
@@ -53,7 +65,7 @@ PWM频率：20kHz
 compare范围：大约 0 ~ 500
 占空比：compare / 500
 */
-#define M0_PWM_PERIOD_TICKS        (M0_PWM_RES_HZ / M0_PWM_FREQ_HZ) /* 500 ticks，50us，20kHz */
+#define M0_PWM_PERIOD_TICKS        (M0_PWM_RES_HZ / M0_PWM_FREQ_HZ) /* 2000 ticks，200us，80kHz */
 
 /*
  * FOC 控制周期。
@@ -84,6 +96,7 @@ compare范围：大约 0 ~ 500
  */
 #define M0_TEST_RPM                30.0f // (r/min）
 #define M0_TEST_UQ                 0.8f /*3.8f = 3.8V*/
+#define M0_TEST_UD                 0.0f /* */
 #define MOTOR_DRV_VBUS             12.0f  /* 12V */
 
 
@@ -106,6 +119,20 @@ compare范围：大约 0 ~ 500
  * enable = false 时，关闭驱动输出，电机不再受控输出。
  */
 #define VBUS_EN_GPIO         12
+
+
+#define POS_KP              0.05f     // V/deg，先小一点
+#define UQ_LIMIT            4.0f      // 初期限制 ±1.2V
+#define POS_DEADBAND_DEG    0.5f      // 小误差死区
+
+
+
+// 360° 环形期望值限幅（自动绕回）
+#define LIMIT_EXP_MECH_360(exp_mech)                \
+do {                                            \
+    while ((exp_mech) >= 360.0f) (exp_mech) -= 360.0f; \
+    while ((exp_mech) < 0.0f)    (exp_mech) += 360.0f; \
+} while(0)
 
 
 /**
@@ -343,7 +370,7 @@ esp_err_t m0_fd6287_mcpwm_init(void)
     );
 
     ESP_LOGI(TAG,
-             "M0 MCPWM init done, freq=%dHz, period_ticks=%d",
+             "M0 MCPWM init done, freq=%dHz, period_ticks=%d\r\n",
              M0_PWM_FREQ_HZ,
              M0_PWM_PERIOD_TICKS
     );
@@ -366,59 +393,143 @@ static bool gptimer_1ms_cb(gptimer_handle_t timer,
     return high_task_wakeup == pdTRUE;
 }
 
+
+static float limit_float(float x, float min, float max)
+{
+    if (x > max)
+    {
+        return max;
+    }
+
+    if (x < min)
+    {
+        return min;
+    }
+
+    return x;
+}
+
+/**
+ * @brief FOC位置控制角度误差计算
+ *        输入当前角度值，和期望角度值
+ * 
+ * 电机旋转方向：顺时针+正值，逆时针-负值
+ * 
+ * @param expct_deg 期望角度值
+ * @param current_deg 当前角度值
+ * @return float 输出的带旋转方向的误差角度值，eg: -45(逆时针旋转四十五度), 90(顺时针旋转90度)
+ */
+static float angle_error_deg(float expct_deg, float current_deg)
+{
+    /*误差值 = 期望值-当前值*/
+    float err = expct_deg - current_deg;
+
+    while (err > 180.0f)
+    {
+        err -= 360.0f;
+    }
+
+    while (err < -180.0f)
+    {
+        err += 360.0f;
+    }
+
+    return err;
+}
+
+/**
+ * @brief 函数执行周期-1ms
+ * 
+ * @param arg 
+ */
 static void m0_foc_control_task(void *arg)
 {
-    spwm_duty_t pwm_duty;
+    pwm_duty_t pwm_duty;
+
+    float uq = 0.0f;
+    float exp_angle = 10.0f;/*期望角度值*/
+    float now_angle = 0.0f;
+    float err_angle = 0.0f;
+    float last_err_angle = 0.0f;
+    
+    float kp = 0.35f;
+    float kd = 0.86f;/*0.001f ~ 0.005f;*/
+    float kd_err_parm = 0.0f;/*微分控制参数*/
+
+    uint32_t log_cnt = 0;
+
+    static uint64_t time_ms = 0;
+    static uint64_t time_s = 0;
+    static uint64_t time_min = 0;
 
     while (1)
     {
-        /*
-         * 等待 GPTimer 通知。
-         */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        #ifdef USE_FOC_SPWM
-        /*
-         * 1. 调用你的开环 FOC + SPWM。
-         *
-         * M0_TEST_RPM：目标机械转速(r/min）
-         * M0_TEST_UQ ：q轴电压幅值
-         * M0_TEST_VBUS：母线电压
-         * M0_FOC_DT_S：控制周期
-         */
-        vfoc_open_loop_spwm_run(M0_TEST_RPM,
-                                M0_TEST_UQ,
-                                MOTOR_DRV_VBUS,
-                                M0_FOC_DT_S
-        );
-        #elifdef USE_FOC_SVPWM
+        time_ms++;
 
-            vfoc_open_loop_svpwm_run(M0_TEST_RPM,
-                                     M0_TEST_UQ,
-                                     MOTOR_DRV_VBUS,
-                                     M0_FOC_DT_S
+        // 60ms = 1秒计数
+        if (time_ms >= 60)
+        {
+            time_ms = 0;  // 清零，不是取余！
+            time_s++;
+
+            // 60秒 = 1分钟
+            if (time_s >= 60)
+            {
+                time_s = 0;
+                time_min++;
+            }
+        }
+        
+        LIMIT_EXP_MECH_360(exp_angle);
+
+        now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
+        err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
+        
+        /*kd微分参数:本次误差值-上一次误差值*/
+        kd_err_parm = err_angle - last_err_angle;
+        // kd_err_parm = get_vfoc_mech_w();
+
+
+        uq = (kp * err_angle) + (kd * kd_err_parm);
+        uq *= -1;
+
+        
+        if (++log_cnt >= 100)
+        {
+            log_cnt = 0;
+
+            ESP_LOGI(TAG,
+                    "uq:%.2f,%.3f,%.2f,%.2f,%.2f,,%lld,%lld,%lld\r\n",
+                    uq,
+                    kp,
+                    exp_angle,
+                    now_angle,
+                    err_angle,
+                    time_ms,
+                    time_s,
+                    time_min
             );
+        }
 
-        #endif
         /*
-         * 2. 获取 duty。
+         * 如果发现电机远离目标，把 uq 改成 -uq，
+         * 或者修正编码器方向/电角度方向。
          */
+        vfoc_set_svpwm(uq,
+                       M0_TEST_UD,
+                       MOTOR_DRV_VBUS);
+
         pwm_duty = vfoc_get_pwm_duty();
 
-        /*
-         * 3. 写入 MCPWM
-         *
-         * duty_Ua → M0_IN1
-         * duty_Ub → M0_IN2
-         * duty_Uc → M0_IN3
-         */
         m0_fd6287_set_duty(pwm_duty.duty_Ua,
                            pwm_duty.duty_Ub,
-                           pwm_duty.duty_Uc
-        );
+                           pwm_duty.duty_Uc);
+
+        last_err_angle = err_angle;/*更新上次误差值*/
     }
 }
-
 esp_err_t m0_fd6287_foc_start(void)
 {
     /*
