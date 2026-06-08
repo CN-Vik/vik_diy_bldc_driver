@@ -1182,66 +1182,226 @@ float get_motor_omega_deg_s_by_angle(float now_angle)
 
 
 /**
- * @brief 获取电机转速rpm(r/min)
- * 
- * @param now_angle 当前的角度值
- * @return float 返回电机的转速rpm(r/min)
+ * @brief 根据当前机械角度计算电机机械转速 rpm，并做自适应滤波
+ *
+ * @details
+ * 这个函数用于 FOC 速度闭环。
+ *
+ * 功能：
+ * 1. 根据 AS5600 当前角度计算机械转速 rpm
+ * 2. 自动处理 0° / 360° 跳变
+ * 3. 静止小抖动时，让速度慢慢衰减到 0
+ * 4. 根据低速 / 中速 / 高速自动选择滤波强度
+ *
+ * 速度范围建议：
+ * - 低速：0 ~ 150 rpm，滤波强一点，防止速度环抖动
+ * - 中速：150 ~ 800 rpm，滤波适中
+ * - 高速：800 rpm 以上，滤波弱一点，保证响应速度
+ *
+ * @param now_angle 当前机械角度，单位 deg，范围一般是 0 ~ 360
+ * @return float 滤波后的机械转速，单位 rpm
  */
 float get_motor_rpm_by_angle(float now_angle)
 {
-    static bool first_flag = true;/*第一次进入的标志*/
+    static bool first_flag = true;          /* 第一次进入标志 */
+    static float last_angle = 0.0f;         /* 上一次角度，单位 deg */
+    static int64_t last_time_us = 0;        /* 上一次时间戳，单位 us */
 
-    static float last_angle = 0.0f;/*存储上一次角度值，计算时间内的角度差值*/
-    static int64_t last_time_us = 0;/*上一次时候的时间戳*/
-    static float rpm_out = 0.0f;/*输出的电机转速(r/min)*/
-    int64_t now_time_us = esp_timer_get_time();/*本次时间戳,单位us*/
+    static float rpm_lpf = 0.0f;            /* 低通滤波后的 rpm 输出 */
 
+    int64_t now_time_us = esp_timer_get_time();
+
+    /*
+     * 第一次进入时，没有上一次角度和时间，无法计算速度。
+     * 所以只记录当前值，返回 0。
+     */
     if (first_flag)
     {
         first_flag = false;
         last_angle = now_angle;
         last_time_us = now_time_us;
-        return rpm_out;
+        rpm_lpf = 0.0f;
+        return 0.0f;
     }
-
-    int64_t dt_us = now_time_us - last_time_us;/*单位us*/
-    double dt_s = ((double)dt_us) / (1.0f*1000.0f*1000.0f);/*转化成单位s*/
-
-    float delta = now_angle - last_angle;
 
     /*
-     * 处理 0° / 360° 跳变
+     * 计算时间差，单位 us。
      */
-    if (delta > 180.0f)
-    {
-        delta -= 360.0f;
-    }
-    else if (delta < -180.0f)
-    {
-        delta += 360.0f;
-    }
+    int64_t dt_us = now_time_us - last_time_us;
 
-    /*检测电机是否是静止时抖动的，不计算转速*/
-    if (fabsf(delta) > AS5600_ANGLE_DEADBAND_DEG)
+    /*
+     * 时间异常，直接返回上一次滤波结果。
+     */
+    if (dt_us <= 0)
     {
-        rpm_out = delta * 60.0f / (360.0f * dt_s);
+        return rpm_lpf;
     }
 
-    // ESP_LOGI(TAG,
-    //         "last_deg:%.2f,now_deg:%.2f,diff_deg:%.2f,dt_s:%.6f,rpm:%.3f,thehold:%.2f\r\n",
-    //         last_angle,
-    //         now_angle,
-    //         delta,
-    //         dt_s,
-    //         rpm_out,
-    //         AS5600_ANGLE_DEADBAND_DEG
-    // );
-    
-    last_angle = now_angle;/*更新上次角度值*/
-    last_time_us = now_time_us;/*更新上次时间戳*/
+    /*
+     * 如果 dt 太小，速度会被放大得很离谱。
+     * 你的编码器任务理论上 1ms 调一次，所以小于 500us 认为不可信。
+     */
+    if (dt_us < 500)
+    {
+        dt_us = 500;
+    }
 
+    /*
+     * 如果 dt 太大，说明任务可能被阻塞。
+     * 这次速度不可信，直接清零或者衰减。
+     */
+    if (dt_us > 20000)
+    {
+        last_angle = now_angle;
+        last_time_us = now_time_us;
 
-    return rpm_out;
+        /*
+         * 不要突然清零太猛，轻微衰减更平滑。
+         */
+        rpm_lpf *= 0.5f;
+
+        if (fabsf(rpm_lpf) < 1.0f)
+        {
+            rpm_lpf = 0.0f;
+        }
+
+        return rpm_lpf;
+    }
+
+    /*
+     * us 转成秒。
+     */
+    float dt_s = (float)dt_us / 1000000.0f;
+
+    /*
+     * 计算角度差。
+     */
+    float delta_deg = now_angle - last_angle;
+
+    /*
+     * 处理 0° / 360° 跳变。
+     *
+     * 例如：
+     * last_angle = 359°
+     * now_angle  = 1°
+     *
+     * 实际是正向转了 2°，不是反向转了 -358°。
+     */
+    if (delta_deg > 180.0f)
+    {
+        delta_deg -= 360.0f;
+    }
+    else if (delta_deg < -180.0f)
+    {
+        delta_deg += 360.0f;
+    }
+
+    /*
+     * 静止抖动死区。
+     *
+     * AS5600 是 12bit：
+     * 1 LSB = 360 / 4096 ≈ 0.0879°
+     *
+     * 你的 AS5600_ANGLE_DEADBAND_DEG = 0.12°，
+     * 大概就是 1~2 个 LSB。
+     */
+    if (fabsf(delta_deg) < AS5600_ANGLE_DEADBAND_DEG)
+    {
+        /*
+         * 小抖动时，不重新计算速度。
+         * 但是也不能保持旧速度不变。
+         * 要让速度慢慢衰减到 0。
+         */
+        rpm_lpf *= 0.85f;
+
+        if (fabsf(rpm_lpf) < 1.0f)
+        {
+            rpm_lpf = 0.0f;
+        }
+
+        last_angle = now_angle;
+        last_time_us = now_time_us;
+
+        return rpm_lpf;
+    }
+
+    /*
+     * 原始 rpm 计算公式：
+     *
+     * rpm = 每秒转过的圈数 * 60
+     *     = (delta_deg / 360) / dt_s * 60
+     */
+    float rpm_raw = delta_deg * 60.0f / (360.0f * dt_s);
+
+    /*
+     * 异常速度限幅。
+     *
+     * 初学阶段先不要放太大。
+     * 如果你后面要跑到 3000rpm、10000rpm，再按实际能力调大。
+     */
+    const float rpm_abs_limit = 3000.0f;
+
+    if (rpm_raw > rpm_abs_limit)
+    {
+        rpm_raw = rpm_abs_limit;
+    }
+    else if (rpm_raw < -rpm_abs_limit)
+    {
+        rpm_raw = -rpm_abs_limit;
+    }
+
+    /*
+     * 根据速度大小自动选择滤波强度。
+     *
+     * alpha 越大：越平滑，但是响应越慢
+     * alpha 越小：响应越快，但是噪声越大
+     */
+    float rpm_abs = fabsf(rpm_raw);
+    float alpha;
+
+    if (rpm_abs < 150.0f)
+    {
+        /*
+         * 低速区：0 ~ 150 rpm
+         *
+         * 低速时 AS5600 量化误差影响明显，
+         * 速度很容易一跳一跳，所以滤波要强一点。
+         */
+        alpha = 0.92f;
+    }
+    else if (rpm_abs < 800.0f)
+    {
+        /*
+         * 中速区：150 ~ 800 rpm
+         *
+         * 速度变化已经比较明显，可以适当降低滤波。
+         */
+        alpha = 0.80f;
+    }
+    else
+    {
+        /*
+         * 高速区：800 rpm 以上
+         *
+         * 高速时需要更快响应，滤波不能太重。
+         */
+        alpha = 0.60f;
+    }
+
+    /*
+     * 一阶低通滤波：
+     *
+     * 新输出 = alpha * 旧输出 + (1 - alpha) * 新测量值
+     */
+    rpm_lpf = alpha * rpm_lpf + (1.0f - alpha) * rpm_raw;
+
+    /*
+     * 更新历史值。
+     */
+    last_angle = now_angle;
+    last_time_us = now_time_us;
+
+    return rpm_lpf;
 }
 
 

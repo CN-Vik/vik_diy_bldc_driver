@@ -20,7 +20,8 @@
 #include "driver/gptimer.h"
 #include "driver/gpio.h"
 #include "vik_foc_pid.h"
-#include <math.h>     
+#include <math.h>
+#include "esp_timer.h"
 
 static const char *TAG = "M0_FD6287";
 
@@ -120,11 +121,12 @@ compare范围：大约 0 ~ 500
  */
 #define VBUS_EN_GPIO         12
 
-
-#define POS_KP              0.05f     // V/deg，先小一点
-#define UQ_LIMIT            4.0f      // 初期限制 ±1.2V
+/**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
+#define UQ_LIMIT            3.2f      // 初期限制 ±1.2V
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
+#define SPEED_DEADBAND_RPM  3.0f
 
+#define SPEED_I_OUT_LIMIT  1.5f
 
 
 // 360° 环形期望值限幅（自动绕回）
@@ -394,6 +396,90 @@ static bool gptimer_1ms_cb(gptimer_handle_t timer,
 }
 
 
+/**
+ * @brief 斜坡限速函数
+ *
+ * @details
+ * 这个函数的作用是：让 now 不要一下子跳到 target，
+ * 而是每次最多只变化 max_step。
+ *
+ * 举例：
+ * now = 0
+ * target = 60
+ * max_step = 1
+ *
+ * 每次调用结果：
+ * 0 -> 1 -> 2 -> 3 -> ... -> 60
+ *
+ * 这样可以避免：
+ * 1. 目标速度突然变化太大
+ * 2. Uq突然变化太大
+ * 3. 电机启动猛冲、超调、震动
+ * 
+ * 比如你 1ms 调用一次，想让目标速度每秒最多增加 80rpm，那每次最大步长就是：
+
+RPM_RAMP_PER_S * dt_s = 80.0f * 0.001f = 0.08rpm
+
+也就是目标速度会这样慢慢爬：
+
+0 -> 0.08 -> 0.16 -> 0.24 -> ... -> 60rpm
+ *
+ * @param now       当前值，比如当前目标速度、当前Uq
+ * @param target    最终想达到的目标值
+ * @param max_step  本次调用允许变化的最大步长，必须是正数
+ *
+ * @return float    限速后的新值
+ */
+static float ramp_float(float now, float target, float max_step)
+{
+    /*
+     * 计算目标值和当前值之间的差值。
+     *
+     * diff > 0：说明目标值比当前值大，需要往上增加。
+     * diff < 0：说明目标值比当前值小，需要往下降低。
+     */
+    float diff = target - now;
+
+    if (diff > max_step)
+    {
+        /*
+         * 如果差值大于最大允许变化量，
+         * 说明这次不能一下子加这么多，只允许最多增加 max_step。
+         *
+         * 例如：
+         * now = 0，target = 60，max_step = 1
+         * diff = 60
+         * 实际本次只允许 +1
+         */
+        diff = max_step;
+    }
+    else if (diff < -max_step)
+    {
+        /*
+         * 如果差值小于 -max_step，
+         * 说明目标值比当前值小很多，
+         * 这次不能一下子减太多，只允许最多减少 max_step。
+         *
+         * 例如：
+         * now = 60，target = 0，max_step = 1
+         * diff = -60
+         * 实际本次只允许 -1
+         */
+        diff = -max_step;
+    }
+
+    /*
+     * 当前值加上被限制后的变化量。
+     *
+     * 如果 target 离 now 很远：
+     *      每次只靠近 max_step。
+     *
+     * 如果 target 离 now 很近：
+     *      直接到达 target，不会来回震荡。
+     */
+    return now + diff;
+}
+
 static float limit_float(float x, float min, float max)
 {
     if (x > max)
@@ -452,21 +538,57 @@ static void m0_foc_control_task(void *arg)
     float err_angle = 0.0f;
     float last_err_angle = 0.0f;
     
-    float kp = 0.35f;
-    float kd = 0.86f;/*0.001f ~ 0.005f;*/
-    float kd_err_parm = 0.0f;/*微分控制参数*/
+    float exp_motor_rpm = 89.0f;/*期望电机转速值*/
+    float now_motor_rpm = 0.0f;
+    float err_motor_rpm = 0.0f;/*rpm:(r/min)*/
+    float last_err_motor_rpm = 0.0f;/*上次转速误差*/
 
+    float kp = 0.02f;
+    float kp_out = 0.0f;/*比例控制输出*/
+        
+    float ki = 0.06f;/*0.001f ~ 0.005f;*/
+    float ki_err_sum = 0.0f;/*微分控制参数*/
+    float ki_out = 0.0f;/*积分控制输出*/
+    
+    float kd = 0.0f;/*0.001f ~ 0.005f;*/
+    float kd_err_parm = 0.0f;/*微分控制参数*/
+    float kd_out = 0.0f;/*微分控制输出*/
+
+    
     uint32_t log_cnt = 0;
+
+    uint64_t stamp_time_us = 0;
+    uint64_t last_stamp_time_us = 0;
+
 
     static uint64_t time_ms = 0;
     static uint64_t time_s = 0;
     static uint64_t time_min = 0;
 
+    /*位置式PID:(dt)
+    u[k] = Kp * e[k] + Ki * sum(e[0..k]) * dt + Kd * (e[k] - e[k-1]) / dt
+
+    // 增量式PID（FOC中更常用）
+    delta_u[k] = Kp * (e[k] - e[k-1]) + Ki * e[k] * dt + Kd * (e[k] - 2*e[k-1] + e[k-2]) / dt
+    u[k] = u[k-1] + delta_u[k]
+    */
+    float dt_s = 0.0f;/*pid计算时间间隔，单位s*/
+
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (stamp_time_us)
+        {/*第一次不计算时间,第一次的last_stamp_time_us=0，计算出的时间有问题的*/
+            stamp_time_us = esp_timer_get_time();/*单位us*/
+            dt_s = (float)((stamp_time_us - last_stamp_time_us)/(1000000.0f));
+        }else{
+            
+            stamp_time_us = esp_timer_get_time();/*单位us*/
+            dt_s = (float)(1.0f);
+        }
 
         time_ms++;
+        // exp_angle++;
 
         // 60ms = 1秒计数
         if (time_ms >= 60)
@@ -482,36 +604,72 @@ static void m0_foc_control_task(void *arg)
             }
         }
         
-        LIMIT_EXP_MECH_360(exp_angle);
+        // LIMIT_EXP_MECH_360(exp_angle);
 
-        now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
-        err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
-        
+        // now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
+        // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
+        now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+        err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
+        /*速度死区，这样速度在 97 ~ 103 rpm 之间就不要来回调整 Uq 了，声音会安静很多。*/
+        /*
+        * 4. 死区处理
+        */
+        if (fabsf(err_motor_rpm) < SPEED_DEADBAND_RPM)
+        {
+            err_motor_rpm = 0.0f;
+
+            /*
+            * 误差很小时，积分慢慢释放一点，防止来回顶。
+            */
+            ki_err_sum *= 0.98f;
+        }
+        else
+        {
+            /*
+            * 5. 积分
+            */
+            ki_err_sum += (err_motor_rpm * dt_s);
+        }
+
+        kp_out = (kp * err_motor_rpm);
+
+        ki_out = (ki * ki_err_sum);
+        /*积分限幅*/
+        ki_out = limit_float(ki_out, -SPEED_I_OUT_LIMIT, SPEED_I_OUT_LIMIT);
+        /* 反推积分，防止 ki_err_sum 内部继续无限变大 */
+        if (ki > 0.000001f)
+        {
+            ki_err_sum = ki_out / ki;
+        }
+
         /*kd微分参数:本次误差值-上一次误差值*/
-        kd_err_parm = err_angle - last_err_angle;
-        // kd_err_parm = get_vfoc_mech_w();
+        // kd_err_parm = err_angle - last_err_angle;
+        kd_err_parm = err_motor_rpm - last_err_motor_rpm;
+        kd_out = (kd * kd_err_parm / dt_s);
+        
 
-
-        uq = (kp * err_angle) + (kd * kd_err_parm);
+        // uq = (kp * err_angle) + (kd * kd_err_parm);
+        uq = kp_out + ki_out + kd_out;
         uq *= -1;
+        // ESP_LOGI(TAG,
+        //         " uq: %.2f\r\n",
+        //         uq
+        // );
         /* 限制 Uq 最大输出，防止上电/大误差时力矩过猛 */
         uq = limit_float(uq, -UQ_LIMIT, UQ_LIMIT);
-
         
         if (++log_cnt >= 100)
         {
             log_cnt = 0;
 
             ESP_LOGI(TAG,
-                    "uq:%.2f,%.3f,%.2f,%.2f,%.2f,,%lld,%lld,%lld\r\n",
+                    "uq: %.2f,%.2f,%.2f,%.2f,%.2f,%.5f\r\n",
                     uq,
                     kp,
-                    exp_angle,
-                    now_angle,
-                    err_angle,
-                    time_ms,
-                    time_s,
-                    time_min
+                    exp_motor_rpm,/*期望转速*/
+                    now_motor_rpm,/*现在转速*/
+                    err_motor_rpm /*转速误差*/,
+                    dt_s
             );
         }
 
@@ -529,7 +687,9 @@ static void m0_foc_control_task(void *arg)
                            pwm_duty.duty_Ub,
                            pwm_duty.duty_Uc);
 
-        last_err_angle = err_angle;/*更新上次误差值*/
+        last_stamp_time_us = stamp_time_us; 
+
+        last_err_motor_rpm = err_motor_rpm;/*更新上次误差值*/
     }
 }
 esp_err_t m0_fd6287_foc_start(void)
