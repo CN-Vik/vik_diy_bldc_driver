@@ -22,7 +22,7 @@
 #include "driver/gpio.h"
 #include "m0_fd6287_pwm.h"
 
-static const char *TAG = "example_foc_float";
+static const char *TAG = "vik_foc_example_main";
 
 
 
@@ -30,6 +30,8 @@ extern void vfoc_init(void);
 extern void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
 // extern void gptimer_creat_main(void);
 extern void motor_encoder_init(void);
+void motor_get_current_main(void);
+
 
 
 
@@ -50,6 +52,9 @@ void app_main(void)
 
     /*电机编码器初始化获取机械角度*/
     motor_encoder_init();
+
+    /*获取电机电流*/
+    // motor_get_current_main();
     
     // gptimer_creat_main();/*创建定时器*/
 

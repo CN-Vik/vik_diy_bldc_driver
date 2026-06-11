@@ -1,8 +1,8 @@
 # 自动获取 main/ 下所有 .c 文件
 file(GLOB MAIN_SOURCES "*.c")
 
-# 自动获取 svpwm/ 下所有 .c 文件
-# file(GLOB SVPWM_SOURCES "svpwm/*.c")
+# 自动获取 motor_current/ 下所有 .c 文件
+file(GLOB MOTOR_CUREENT_SOURCES "motor_current/*.c")
 
 # 自动获取 vik_foc/ 下所有 .c 文件
 file(GLOB VIK_FOC_SOURCES "vik_foc/*.c")
@@ -12,7 +12,7 @@ file(GLOB AS5600_SOURCES "as5600/*.c")
 # 合并所有源文件
 set(COMPONENT_SRCS
     ${MAIN_SOURCES}
-    # ${SVPWM_SOURCES}
+    ${MOTOR_CUREENT_SOURCES}
     ${VIK_FOC_SOURCES}
     ${AS5600_SOURCES}
 )
@@ -25,6 +25,7 @@ idf_component_register(
                   esp_driver_gpio 
                   esp_driver_gptimer
                   esp_timer
-                  esp_driver_i2c 
+                  esp_driver_i2c  
+                  esp_adc 
                    
 )

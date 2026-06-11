@@ -1,4 +1,4 @@
 {
-    "cmake.sourceDirectory": "C:/Users/ufo28/Desktop/Mortor_Driver/vik_diy_foc/esp32_diy_foc/vik_diy_bldc_driver/mcpwm_foc_svpwm_open_loop",
+    "cmake.sourceDirectory": "C:/Users/ufo28/Desktop/Mortor_Driver/vik_diy_foc/esp32_diy_foc/vik_diy_bldc_driver/vik_foc",
     "idf.currentSetup": "C:/Espressif/frameworks/esp-idf-v5.5.3/"
 }

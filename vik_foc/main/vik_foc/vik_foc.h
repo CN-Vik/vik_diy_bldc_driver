@@ -107,6 +107,10 @@ typedef struct
     unsigned int pole_pairs;/*电机磁极对数*/
     float theta_m;/*电机的机械角度：电机转子实际转过的角度*/
 
+    float ia;/*电机a相电流*/
+    float ib;
+    float ic;
+
 }motor_parm_t;
 
 

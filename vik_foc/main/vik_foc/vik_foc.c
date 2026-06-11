@@ -41,6 +41,78 @@ KV值： 110KV
 foc_data_t vfoc_dt={0};
 
 
+
+/**
+ * @brief 设置A相电流
+ * 
+ * @param curent 
+ */
+void set_vfoc_ia_current(float curent)
+{
+    vfoc_dt.motor_par.ia = curent;
+}
+
+
+
+/**
+ * @brief 获取A相电流
+ * 
+ * @return float 
+ */
+float get_vfoc_ia_current(void)
+{
+    return vfoc_dt.motor_par.ia;
+}
+
+
+
+/**
+ * @brief 设置B相电流
+ * 
+ * @param curent 
+ */
+void set_vfoc_ib_current(float curent)
+{
+    vfoc_dt.motor_par.ib = curent;
+}
+
+
+
+/**
+ * @brief 获取B相电流
+ * 
+ * @return float 
+ */
+float get_vfoc_ib_current(void)
+{
+    return vfoc_dt.motor_par.ib;
+}
+
+
+/**
+ * @brief 设置C相电流
+ * 
+ * @param curent 
+ */
+void set_vfoc_ic_current(float curent)
+{
+    vfoc_dt.motor_par.ic = curent;
+}
+
+
+
+/**
+ * @brief 获取C相电流
+ * 
+ * @return float 
+ */
+float get_vfoc_ic_current(void)
+{
+    return vfoc_dt.motor_par.ic;
+}
+
+
+
 /**
  * @brief 设置FOC机械角速度w(°/s)
  * 
