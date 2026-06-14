@@ -11,6 +11,7 @@
 #include "vik_foc.h"
 #include <math.h>
 #include "esp_log.h"
+#include "stdbool.h"
 
 static const char *TAG = "vik_foc:";
 
@@ -39,6 +40,73 @@ KV值： 110KV
 
 /*viK_foc_data变量*/
 foc_data_t vfoc_dt={0};
+
+
+/**
+ * @brief 一阶低通滤波函数
+ * 
+ * @param input 当前输入值
+ * @param alpha 滤波系数，范围 0.0f ~ 1.0f
+ *              alpha 越小，滤波越强，响应越慢
+ *              alpha 越大，响应越快，滤波越弱
+ * 
+alpha = 0.05f;   // 滤波很强，输出很稳，但是响应慢
+alpha = 0.10f;   // 比较常用，适合电流/速度滤波
+alpha = 0.20f;   // 响应更快，滤波弱一点
+alpha = 0.50f;   // 响应很快，滤波比较弱
+ * 
+
+角度值	0.05 ~ 0.15	角度不要滤太狠，否则位置环会变迟钝
+速度 RPM	0.10 ~ 0.30	速度计算本身抖动大，可以适当滤强一点
+电流值	0.05 ~ 0.20	只做显示/保护可以小一点；做电流环不能太小
+力矩值	0.10 ~ 0.30	如果力矩来自 Iq，基本跟电流滤波一致
+PID 的 D 项	0.05 ~ 0.15	D 项最容易放大噪声，建议滤强一点
+ * 
+ * @return float 滤波后的输出值
+ */
+float low_pass_filter(float input, float alpha)
+{
+    static float last_output = 0.0f;    /* 上一次滤波输出值 */
+    static bool first_flag = true;      /* 第一次进入标志 */
+
+    float output = 0.0f;
+
+    /*
+     * 限制alpha范围，防止参数乱传
+     */
+    if (alpha < 0.0f)
+    {
+        alpha = 0.0f;
+    }
+    else if (alpha > 1.0f)
+    {
+        alpha = 1.0f;
+    }
+
+    /*
+     * 第一次进入时，直接让输出等于输入
+     * 防止一开始从0慢慢爬上去
+     */
+    if (first_flag)
+    {
+        first_flag = false;
+        last_output = input;
+        return input;
+    }
+
+    /*
+     * 一阶低通滤波公式：
+     * output = last_output + alpha * (input - last_output)
+     */
+    output = last_output + alpha * (input - last_output);
+
+    /*
+     * 保存本次输出，供下次使用
+     */
+    last_output = output;
+
+    return output;
+}
 
 
 
@@ -259,6 +327,51 @@ void vfoc_update_open_loop_angle(float target_rpm, float dt_s)
 }
 
 
+/**
+ * @brief 克拉克变换/克拉克正变换
+ * 输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta
+ *
+ * Clarke 变换公式：
+ *
+ * I_alpha = 2/3 * (ia - 0.5 * ib - 0.5 * ic)
+ * I_beta  = 2/3 * (sqrt(3)/2) * (ib - ic)
+ *
+ * @param ia 电机A相实际电流值，单位A
+ * @param ib 电机B相实际电流值，单位A
+ * @param ic 电机C相实际电流值，单位A
+ *
+ * @return clark_parm_t 返回 I_alpha、I_beta
+ */
+clark_parm_t clark_tansform(float ia, float ib, float ic)
+{
+    clark_parm_t clark = {0};
+
+    /*
+     * 2 / 3
+     */
+    const float TWO_BY_THREE = 0.6666666667f;
+
+    /* 二分之更号三
+     * sqrt(3) / 2
+     */
+    const float SQRT3_BY_TWO = 0.8660254038f;
+
+    /*
+     * I_alpha 轴和 A 相重合。
+     */
+    clark.I_alpha = TWO_BY_THREE *
+                    (ia - 0.5f * ib - 0.5f * ic);
+
+    /*
+     * I_beta 轴比 I_alpha 轴超前 90°。
+     */
+    clark.I_beta = TWO_BY_THREE *
+                   SQRT3_BY_TWO *
+                   (ib - ic);
+
+    return clark;
+}
+
 
 /**
  * @brief 克拉克逆变换(clark_inverse_transform)
@@ -296,6 +409,48 @@ motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v)
     return l_temp_motor_drv_val;
 
 }
+
+
+/**
+ * @brief Park变换 / Park正变换
+ *
+ * 输入两相静止坐标系电流 I_alpha、I_beta，
+ * 结合当前电角度 theta_e_rad，
+ * 计算旋转坐标系下的 Id、Iq。
+ *
+ * 公式：
+ * Id =  I_alpha * cos(theta_e) + I_beta * sin(theta_e)
+ * Iq = -I_alpha * sin(theta_e) + I_beta * cos(theta_e)
+ *
+ * @param I_alpha alpha轴电流
+ * @param I_beta  beta轴电流
+ * @param theta_e_rad 当前电角度，单位：弧度
+ *
+ * @return park_parm_t 返回 Id、Iq
+ */
+park_parm_t park_tansform(float I_alpha, float I_beta, float theta_e_rad)
+{
+    park_parm_t park = {0};
+
+    float sin_theta = sinf(theta_e_rad);
+    float cos_theta = cosf(theta_e_rad);
+
+    /*
+     * d轴电流：
+     * 表示和转子磁场方向重合的电流分量。
+     */
+    park.Ud = I_alpha * cos_theta + I_beta * sin_theta;
+
+    /*
+     * q轴电流：
+     * 表示和转子磁场垂直的电流分量。
+     * BLDC/PMSM 主要靠 Iq 产生转矩。
+     */
+    park.Uq = -I_alpha * sin_theta + I_beta * cos_theta;
+
+    return park;
+}
+
 
 
 /**
@@ -854,6 +1009,17 @@ void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s)
 pwm_duty_t vfoc_get_pwm_duty(void)
 {
     return vfoc_dt.motor_drv_val.pwm_duty_val;
+}
+
+void vfoc_set_motor_drv_iq(float uq)
+{
+    vfoc_dt.motor_drv_val.iq = uq;
+}
+
+
+float vfoc_get_motor_drv_iq(void)
+{
+    return vfoc_dt.motor_drv_val.iq;
 }
 
 

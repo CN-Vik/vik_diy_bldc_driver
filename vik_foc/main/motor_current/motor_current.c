@@ -2,6 +2,12 @@
  * @file motor_current.c
  * @author vik (ufo281@outlook.com)
  * @brief 
+ * ESP32 + INA240A2 双电机四路相电流采样
+ *
+ * M0_CS2 -> GPIO36 -> ADC1_CH0
+ * M0_CS1 -> GPIO39 -> ADC1_CH3
+ * M1_CS2 -> GPIO34 -> ADC1_CH6
+ * M1_CS1 -> GPIO35 -> ADC1_CH7
  * @version 0.1
  * @date 2026-06-10
  * 
@@ -9,19 +15,6 @@
  * 
  */
 #include "motor_current.h"
-
-
-
-
-/*
- * ESP32 + INA240A2 双电机四路相电流采样
- *
- * M0_CS2 -> GPIO36 -> ADC1_CH0
- * M0_CS1 -> GPIO39 -> ADC1_CH3
- * M1_CS2 -> GPIO34 -> ADC1_CH6
- * M1_CS1 -> GPIO35 -> ADC1_CH7
- */
-
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -39,6 +32,11 @@
 #include "esp_adc/adc_continuous.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
+#include "vik_foc.h"
+#include "app_rtos_resource.h"
+#include "motor_power.h"
+#include "app_rtos_config.h"
+
 
 /*----------------------------------------------------------
  * ADC基本配置
@@ -74,23 +72,31 @@
 /* ADC驱动内部缓冲区大小 */
 #define CURRENT_ADC_STORE_BUFFER_SIZE 2048
 
-/* 每路零点校准采样次数 */
+/* 每路零漂校准采样次数 */
 #define CURRENT_ZERO_SAMPLE_NUM 2000
 
 /* 每隔100ms打印一次 */
-#define CURRENT_REPORT_PERIOD_US (100 * 1000)
+#define CURRENT_REPORT_PERIOD_US (1000 * 1000)
 
 /* ESP32 ADC1总共有8个通道：0～7 */
 #define ESP32_ADC1_CHANNEL_MAX 8
 
 /*----------------------------------------------------------
  * INA240A2配置
- *----------------------------------------------------------*/
+ Vout = Vref + G*Vin
+ Vout:输出的放大信号，ADC检测到的值
+ Vref:零点时的电压值，电路设计的是Vref:1.65V
+ G:运算放大器的增益值
+ Vin:被测电压相线的电压值
+
+求电机相线的电流值就用Vin/R(电阻值)
+I = Vin/Rsen
+*----------------------------------------------------------*/
 
 /* INA240A2增益为50V/V */
 #define INA240_GAIN 50.0f
 
-/* 电流采样电阻为10mΩ */
+/* 电流采样电阻为10mΩ,0.01欧姆 */
 #define CURRENT_SHUNT_RESISTOR_OHM 0.010f
 
 /*
@@ -100,6 +106,7 @@
  *
  * 即：
  * 500mV/A
+ * 乘1000将值转化为v
  */
 #define INA240_MV_PER_AMP \
     (INA240_GAIN * CURRENT_SHUNT_RESISTOR_OHM * 1000.0f)
@@ -110,14 +117,43 @@
  * 电流采样任务配置
  *----------------------------------------------------------*/
 
-/* ESP-IDF中的任务栈大小单位是字节 */
-#define CURRENT_ADC_TASK_STACK_SIZE    (8 * 1024)
 
-/* ADC读取任务优先级 */
-#define CURRENT_ADC_TASK_PRIORITY      8
+/*电机0的相电流采集的ADC通道*/
+#define MOTOR0_ADC_CH_IA        ADC_CHANNEL_0 /* GPIO36：M0_CS2 */
+#define MOTOR0_ADC_CH_IB        ADC_CHANNEL_3 /* GPIO39：M0_CS1 */
+#define MOTOR0_ADC_CH_IC        
 
-/* 固定运行在CPU0 */
-#define CURRENT_ADC_TASK_CORE          0
+#define MOTOR1_ADC_CH_IA        ADC_CHANNEL_6 /* GPIO34：M1_CS2 */
+#define MOTOR2_ADC_CH_IB        ADC_CHANNEL_7 /* GPIO35：M1_CS1 */
+#define MOTOR3_ADC_CH_IC        
+
+/**
+ * @brief 
+ * 
+// ADC_CHANNEL_0, // GPIO36：M0_CS2 
+// ADC_CHANNEL_3, // GPIO39：M0_CS1
+// ADC_CHANNEL_6, // GPIO34：M1_CS2
+// ADC_CHANNEL_7, // GPIO35：M1_CS1
+ * 
+ */
+typedef struct 
+{
+    float mtor_ia_curent;/*换算后的电机相线的电流值,单位A*/
+    float mtor_ib_curent;
+    float mtor_ic_curent;
+
+    float mtor_zero_ua;/*电机静止时候零点的电压值Vref ,单位:mv*/
+    float mtor_zero_ub;/*电机静止时候零点的电压值Vref*/
+    float mtor_zero_uc;/*电机静止时候零点的电压值Vref*/
+
+    float ia_shunt_mv;/*电机相线的电压值,单位:mv*/
+    float ib_shunt_mv;
+    float ic_shunt_mv;
+
+}adc_motor_current_t;
+
+adc_motor_current_t adc_m0_val = {0};
+adc_motor_current_t adc_m1_val = {0};
 
 
 
@@ -125,40 +161,24 @@
  * 大数组必须放到静态存储区，
  * 不要全部压在app_main任务栈中。
  */
-static uint8_t s_adc_result[CURRENT_ADC_READ_LEN];
+static uint8_t s_adc_dma_buf_result[CURRENT_ADC_READ_LEN];
 
-/* 零电流校准统计 */
+/* 零飘电流校准统计 */
 static uint64_t s_zero_sum[ESP32_ADC1_CHANNEL_MAX];
 static uint32_t s_zero_count[ESP32_ADC1_CHANNEL_MAX];
 static uint32_t s_zero_raw[ESP32_ADC1_CHANNEL_MAX];
 static int s_zero_voltage_mv[ESP32_ADC1_CHANNEL_MAX];
 
-/* 运行时ADC原始值统计 */
-static uint64_t s_report_sum[ESP32_ADC1_CHANNEL_MAX];
-static uint32_t s_report_count[ESP32_ADC1_CHANNEL_MAX];
 
-/*
- * 运行时电流统计。
- *
- * 不能只对有符号电流求平均，因为电机相电流正负交替时，
- * 正负值会互相抵消，看起来会接近0A。
+/**
+ * @brief 四路ADC通道
+ * 
  */
-static float s_current_latest[ESP32_ADC1_CHANNEL_MAX];      /* 最新一次瞬时电流 */
-static float s_current_sum[ESP32_ADC1_CHANNEL_MAX];         /* 有符号电流累计 */
-static float s_current_abs_sum[ESP32_ADC1_CHANNEL_MAX];     /* 电流绝对值累计 */
-static float s_current_square_sum[ESP32_ADC1_CHANNEL_MAX];  /* 电流平方累计 */
-static float s_current_min[ESP32_ADC1_CHANNEL_MAX];         /* 统计周期内最小值 */
-static float s_current_max[ESP32_ADC1_CHANNEL_MAX];         /* 统计周期内最大值 */
-
-/*----------------------------------------------------------
- * 四路ADC通道
- *----------------------------------------------------------*/
-
 static const adc_channel_t current_adc_channels[CURRENT_ADC_CHANNEL_NUM] = {
-    ADC_CHANNEL_0, /* GPIO36：M0_CS2 */
-    ADC_CHANNEL_3, /* GPIO39：M0_CS1 */
-    ADC_CHANNEL_6, /* GPIO34：M1_CS2 */
-    ADC_CHANNEL_7, /* GPIO35：M1_CS1 */
+    MOTOR0_ADC_CH_IA, /* GPIO36：M0_CS2 */
+    MOTOR0_ADC_CH_IB, /* GPIO39：M0_CS1 */
+    MOTOR1_ADC_CH_IA, /* GPIO34：M1_CS2 */
+    MOTOR2_ADC_CH_IB, /* GPIO35：M1_CS1 */
 };
 
 /* ADC中断通知的任务句柄 */
@@ -173,28 +193,30 @@ static bool current_adc_cali_enable = false;
 /* 日志TAG */
 static const char *TAG = "CURRENT_ADC";
 
-/*----------------------------------------------------------
- * 获取ADC通道对应的信号名称
- *----------------------------------------------------------*/
-
+ /**
+  * @brief 获取ADC通道对应的信号名称
+  * 
+  * @param channel 
+  * @return const char* 
+  */
 static const char *current_adc_get_name(adc_channel_t channel)
 {
     switch (channel)
     {
-    case ADC_CHANNEL_0:
-        return "M0_CS2";
+        case MOTOR0_ADC_CH_IA:
+            return "M0_CS2";
 
-    case ADC_CHANNEL_3:
-        return "M0_CS1";
+        case MOTOR0_ADC_CH_IB:
+            return "M0_CS1";
 
-    case ADC_CHANNEL_6:
-        return "M1_CS2";
+        case MOTOR1_ADC_CH_IA:
+            return "M1_CS2";
 
-    case ADC_CHANNEL_7:
-        return "M1_CS1";
+        case MOTOR2_ADC_CH_IB:
+            return "M1_CS1";
 
-    default:
-        return "UNKNOWN";
+        default:
+            return "UNKNOWN";
     }
 }
 
@@ -214,10 +236,11 @@ static int current_adc_raw_to_mv(uint32_t raw)
      */
     if (current_adc_cali_enable)
     {
-        esp_err_t ret = adc_cali_raw_to_voltage(
+        esp_err_t ret = adc_cali_raw_to_voltage( 
             current_adc_cali_handle,
             raw,
-            &voltage_mv);
+            &voltage_mv
+        );
 
         if (ret == ESP_OK)
         {
@@ -241,7 +264,7 @@ static int current_adc_raw_to_mv(uint32_t raw)
 
 static bool current_adc_calibration_init(void)
 {
-#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+#if 1//ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
 
     adc_cali_line_fitting_config_t cali_config = {
         .unit_id = CURRENT_ADC_UNIT,
@@ -251,7 +274,8 @@ static bool current_adc_calibration_init(void)
 
     esp_err_t ret = adc_cali_create_scheme_line_fitting(
         &cali_config,
-        &current_adc_cali_handle);
+        &current_adc_cali_handle
+    );
 
     if (ret == ESP_OK)
     {
@@ -259,10 +283,10 @@ static bool current_adc_calibration_init(void)
         return true;
     }
 
-    ESP_LOGW(
-        TAG,
-        "ADC校准初始化失败：%s，后续使用理论电压换算",
-        esp_err_to_name(ret));
+    ESP_LOGW( TAG,
+        "ADC校准初始化失败:%s,后续使用理论电压换算",
+        esp_err_to_name(ret)
+    );
 
 #else
 
@@ -273,10 +297,17 @@ static bool current_adc_calibration_init(void)
     return false;
 }
 
-/*----------------------------------------------------------
- * ADC转换完成回调
- *----------------------------------------------------------*/
 
+
+/**
+ * @brief ADC转换完成回调, 20KHZ的ADC采样频率
+ * 
+ * @param adc_handle 
+ * @param edata 
+ * @param user_data 
+ * @return true 
+ * @return false 
+ */
 static bool IRAM_ATTR current_adc_conv_done_cb( adc_continuous_handle_t adc_handle,
                                                 const adc_continuous_evt_data_t *edata,
                                                 void *user_data)
@@ -357,17 +388,16 @@ static void current_adc_continuous_init( adc_continuous_handle_t *out_handle )
     for (int i = 0; i < CURRENT_ADC_CHANNEL_NUM; i++)
     {
         adc_pattern[i].atten = CURRENT_ADC_ATTEN;
-        adc_pattern[i].channel =
-            current_adc_channels[i] & 0x07;
+        adc_pattern[i].channel = current_adc_channels[i] & 0x07;
         adc_pattern[i].unit = CURRENT_ADC_UNIT;
-        adc_pattern[i].bit_width =
-            CURRENT_ADC_BIT_WIDTH;
+        adc_pattern[i].bit_width = CURRENT_ADC_BIT_WIDTH;
 
         ESP_LOGI(
             TAG,
-            "配置%s：ADC1_CH%d",
+            "配置%s:ADC1_CH%d",
             current_adc_get_name(current_adc_channels[i]),
-            current_adc_channels[i]);
+            current_adc_channels[i]
+        );
     }
 
     adc_config.adc_pattern = adc_pattern;
@@ -375,17 +405,18 @@ static void current_adc_continuous_init( adc_continuous_handle_t *out_handle )
     ESP_ERROR_CHECK(
         adc_continuous_config(
             adc_handle,
-            &adc_config));
+            &adc_config
+        )
+    );
 
     *out_handle = adc_handle;
 }
 
 /*----------------------------------------------------------
- * 判断所有通道是否完成零点校准
+ * 判断所有通道是否完成零漂校准
  *----------------------------------------------------------*/
 
-static bool current_adc_zero_calibration_finished(
-    const uint32_t s_zero_count[ESP32_ADC1_CHANNEL_MAX])
+static bool current_adc_zero_calibration_finished(const uint32_t s_zero_count[ESP32_ADC1_CHANNEL_MAX])
 {
     for (int i = 0; i < CURRENT_ADC_CHANNEL_NUM; i++)
     {
@@ -399,35 +430,6 @@ static bool current_adc_zero_calibration_finished(
 
     return true;
 }
-
-
-/*----------------------------------------------------------
- * 清空一个统计周期的电流数据
- *----------------------------------------------------------*/
-
-static void current_adc_report_stats_reset(void)
-{
-    memset(s_report_sum, 0, sizeof(s_report_sum));
-    memset(s_report_count, 0, sizeof(s_report_count));
-
-    memset(s_current_latest, 0, sizeof(s_current_latest));
-    memset(s_current_sum, 0, sizeof(s_current_sum));
-    memset(s_current_abs_sum, 0, sizeof(s_current_abs_sum));
-    memset(s_current_square_sum, 0, sizeof(s_current_square_sum));
-
-    /*
-     * 最小值初始设为很大的正数，最大值初始设为很小的负数。
-     * 收到第一个样本以后，它们就会被真实电流值替换。
-     */
-    for (int i = 0; i < CURRENT_ADC_CHANNEL_NUM; i++)
-    {
-        adc_channel_t channel = current_adc_channels[i];
-
-        s_current_min[channel] = FLT_MAX;
-        s_current_max[channel] = -FLT_MAX;
-    }
-}
-
 
 
 
@@ -449,11 +451,11 @@ static void motor_current_adc_task(void *arg)
     esp_err_t ret;
     uint32_t ret_num = 0;
 
-    /* 标记四路电流零点是否校准完成 */
+    /* 标记四路电流零漂是否校准完成 */
     bool zero_calibration_done = false;
 
     /* 上一次打印电流数据的时间 */
-    int64_t last_report_time_us = esp_timer_get_time();
+    // int64_t last_report_time_us = esp_timer_get_time();
 
     /* 当前任务就是ADC中断需要通知的任务 */
     motor_current_adc_task_handle = xTaskGetCurrentTaskHandle();
@@ -463,14 +465,11 @@ static void motor_current_adc_task(void *arg)
      *
      * 因为这些变量位于静态区，不占当前任务栈。
      */
-    memset(s_adc_result, 0, sizeof(s_adc_result));
-
+    memset(s_adc_dma_buf_result, 0, sizeof(s_adc_dma_buf_result));
     memset(s_zero_sum, 0, sizeof(s_zero_sum));
     memset(s_zero_count, 0, sizeof(s_zero_count));
     memset(s_zero_raw, 0, sizeof(s_zero_raw));
     memset(s_zero_voltage_mv, 0, sizeof(s_zero_voltage_mv));
-
-    current_adc_report_stats_reset();
 
     ESP_LOGI(
         TAG,
@@ -481,8 +480,7 @@ static void motor_current_adc_task(void *arg)
     /*
      * 初始化ADC电压校准。
      */
-    current_adc_cali_enable =
-        current_adc_calibration_init();
+    current_adc_cali_enable = current_adc_calibration_init();
 
     /*
      * 初始化ADC连续采样。
@@ -511,12 +509,10 @@ static void motor_current_adc_task(void *arg)
     /*
      * 启动ADC连续采样。
      */
-    ESP_ERROR_CHECK(
-        adc_continuous_start(adc_handle)
-    );
+    ESP_ERROR_CHECK( adc_continuous_start(adc_handle) );
 
-    ESP_LOGW(TAG, "开始四路电流零点校准");
-    ESP_LOGW(TAG, "校准期间必须关闭电机PWM，保证相电流为0A");
+    ESP_LOGW(TAG, "开始四路电流零漂校准");
+    ESP_LOGW(TAG, "校准期间必须关闭电机PWM,保证相电流为0A");
 
     while (1)
     {
@@ -530,13 +526,14 @@ static void motor_current_adc_task(void *arg)
 
         /*
          * 一次通知到来后，尽量把ADC内部缓冲区的数据全部读完。
+            零漂值读取
          */
         while (1)
         {
             ret = adc_continuous_read(
                 adc_handle,
-                s_adc_result,
-                sizeof(s_adc_result),
+                s_adc_dma_buf_result,
+                sizeof(s_adc_dma_buf_result),
                 &ret_num,
                 0
             );
@@ -556,7 +553,7 @@ static void motor_current_adc_task(void *arg)
             {
                 ESP_LOGE(
                     TAG,
-                    "读取ADC失败：%s",
+                    "读取ADC失败:%s",
                     esp_err_to_name(ret)
                 );
 
@@ -569,25 +566,17 @@ static void motor_current_adc_task(void *arg)
              * 每SOC_ADC_DIGI_RESULT_BYTES字节，
              * 表示一次ADC转换结果。
              */
-            for (uint32_t offset = 0;
-                 offset < ret_num;
-                 offset += SOC_ADC_DIGI_RESULT_BYTES)
+            for (uint32_t offset = 0;offset < ret_num; offset += SOC_ADC_DIGI_RESULT_BYTES)
             {
                 /*
                  * 将DMA数据转换为ESP32 ADC结果结构体。
                  */
-                const adc_digi_output_data_t *adc_data =
-                    (const adc_digi_output_data_t *)
-                    &s_adc_result[offset];
-
+                const adc_digi_output_data_t *adc_data = (const adc_digi_output_data_t *)&s_adc_dma_buf_result[offset];
                 /*
                  * 从TYPE1格式中提取ADC通道和原始值。
                  */
-                uint32_t channel =
-                    adc_data->type1.channel;
-
-                uint32_t raw =
-                    adc_data->type1.data;
+                uint32_t channel = adc_data->type1.channel;
+                uint32_t raw = adc_data->type1.data;/*此ADC通道的原始数据*/
 
                 /*
                  * ESP32 ADC1只有通道0～7。
@@ -596,24 +585,22 @@ static void motor_current_adc_task(void *arg)
                 {
                     continue;
                 }
-
                 /*
-                 * 零点校准阶段。
+                 * 零漂校准阶段。
                  */
                 if (!zero_calibration_done)
-                {
+                {/*未进行零漂值获取*/
                     /*
                      * 每路采集CURRENT_ZERO_SAMPLE_NUM个样本。
                      */
-                    if (s_zero_count[channel] <
-                        CURRENT_ZERO_SAMPLE_NUM)
+                    if (s_zero_count[channel] < CURRENT_ZERO_SAMPLE_NUM)
                     {
                         s_zero_sum[channel] += raw;
                         s_zero_count[channel]++;
                     }
-                }
-                else
-                {
+
+                }else{/*零漂值获取完成*/
+                    
                     /*
                      * 正常运行阶段：每一个ADC样本都先换算成有符号电流，
                      * 再分别统计瞬时值、平均值、最小值、最大值、
@@ -621,207 +608,169 @@ static void motor_current_adc_task(void *arg)
                      */
                     int voltage_mv = current_adc_raw_to_mv(raw);
 
-                    float current_a =
-                        ((float)voltage_mv -
-                         (float)s_zero_voltage_mv[channel]) /
-                        INA240_MV_PER_AMP;
-
-                    /* 保存ADC平均值所需的原始数据 */
-                    s_report_sum[channel] += raw;
-                    s_report_count[channel]++;
-
-                    /* 最新一次采样值，作为“瞬时电流”显示 */
-                    s_current_latest[channel] = current_a;
-
-                    /* 有符号平均电流累计，正负值可能互相抵消 */
-                    s_current_sum[channel] += current_a;
-
-                    /* 绝对值平均，适合观察正负交替的相电流大小 */
-                    s_current_abs_sum[channel] += fabsf(current_a);
-
-                    /* 平方累计，用于计算RMS有效值 */
-                    s_current_square_sum[channel] +=
-                        current_a * current_a;
-
-                    /* 记录统计周期内的最小、最大瞬时电流 */
-                    if (current_a < s_current_min[channel])
+                    /*电机相线电压值*/
+                    float motor_vin = ((float)voltage_mv - (float)s_zero_voltage_mv[channel] ) / 
+                                      INA240_GAIN;
+                    /*获取当前通道的电流值*/
+                    // float current_a = ((float)voltage_mv - (float)s_zero_voltage_mv[channel] ) /
+                    //                   INA240_MV_PER_AMP;
+                    /*单位是A, mv/m欧姆 = A*/
+                    float current_a = (motor_vin ) / (CURRENT_SHUNT_RESISTOR_OHM*1000);
+                    switch (channel)
                     {
-                        s_current_min[channel] = current_a;
-                    }
-
-                    if (current_a > s_current_max[channel])
-                    {
-                        s_current_max[channel] = current_a;
+                        case MOTOR0_ADC_CH_IA:
+                        {
+                            adc_m0_val.mtor_ia_curent = current_a;/*单位:A*/
+                            adc_m0_val.ia_shunt_mv = motor_vin;
+                            break;
+                        }
+                        case MOTOR0_ADC_CH_IB:
+                        {
+                            adc_m0_val.mtor_ib_curent = current_a;
+                            adc_m0_val.ib_shunt_mv = motor_vin;
+                            break;
+                        }
+                        case MOTOR1_ADC_CH_IA:
+                        {
+                            adc_m1_val.mtor_ia_curent = current_a;
+                            adc_m1_val.ia_shunt_mv = motor_vin;
+                            break;
+                        }
+                        case MOTOR2_ADC_CH_IB:
+                        {
+                            adc_m1_val.mtor_ib_curent = current_a;
+                            adc_m1_val.ib_shunt_mv = motor_vin;
+                            break;
+                        }
+                        default:
+                        {
+                            break;
+                        }
                     }
                 }
             }
 
             /*
-             * 检查四路通道是否全部完成零点采样。
+             * 检查四路通道是否全部完成零漂采样。
              */
-            if (!zero_calibration_done &&
-                current_adc_zero_calibration_finished(
-                    s_zero_count))
+            if ( (!zero_calibration_done ) && current_adc_zero_calibration_finished(s_zero_count))
             {
-                for (int i = 0;
-                     i < CURRENT_ADC_CHANNEL_NUM;
-                     i++)
+                for (int i = 0; i < CURRENT_ADC_CHANNEL_NUM; i++)
                 {
-                    adc_channel_t channel =
-                        current_adc_channels[i];
-
+                    adc_channel_t channel = current_adc_channels[i];
                     /*
                      * 计算该通道零电流时的ADC平均值。
                      */
-                    s_zero_raw[channel] =
-                        s_zero_sum[channel] /
-                        s_zero_count[channel];
-
+                    s_zero_raw[channel] = s_zero_sum[channel] / s_zero_count[channel];
                     /*
-                     * 将零点ADC值转换成毫伏。
+                     * 将零漂ADC值转换成毫伏。
                      */
-                    s_zero_voltage_mv[channel] =
-                        current_adc_raw_to_mv(
-                            s_zero_raw[channel]
-                        );
+                    s_zero_voltage_mv[channel] = current_adc_raw_to_mv(s_zero_raw[channel]);
 
+                    switch (channel)
+                    {
+                        case MOTOR0_ADC_CH_IA:
+                        {
+                            adc_m0_val.mtor_zero_ua = s_zero_voltage_mv[channel];
+                            break;
+                        }
+                        case MOTOR0_ADC_CH_IB:
+                        {
+                            adc_m0_val.mtor_zero_ub = s_zero_voltage_mv[channel];
+                            break;
+                        }
+                        case MOTOR1_ADC_CH_IA:
+                        {
+                            adc_m1_val.mtor_zero_ua = s_zero_voltage_mv[channel];
+                            break;
+                        }
+                        case MOTOR2_ADC_CH_IB:
+                        {
+                            adc_m1_val.mtor_zero_ub = s_zero_voltage_mv[channel];
+                            break;
+                        }
+                        default:
+                        {
+                            break;
+                        }
+                    }
                     ESP_LOGI(
                         TAG,
-                        "%s零点：raw=%" PRIu32
-                        "，voltage=%dmV",
+                        "%s ,zero_vref:%dmv\r\n",
                         current_adc_get_name(channel),
-                        s_zero_raw[channel],
                         s_zero_voltage_mv[channel]
                     );
                 }
-
                 zero_calibration_done = true;
 
-                /*
-                 * 清空运行阶段的统计数据，
-                 * 从零点校准完成后重新开始一个统计周期。
-                 */
-                current_adc_report_stats_reset();
+                // last_report_time_us  = esp_timer_get_time();
+                
+                ESP_LOGI(TAG, "四路电流零漂电流值获取完成! \r\n");
 
-                last_report_time_us =
-                    esp_timer_get_time();
-
-                ESP_LOGI(TAG, "四路电流零点校准完成");
+                esp_err_t ret = motor_power_enable(true);
+                if (ret != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "get_current_MOS打开失败,禁止启动电机\r\n");
+                }
+                else{
+                    ESP_LOGE(TAG, "get_current_MOS打开成功,启动电机!\r\n");
+                }
             }
         }
+
+        /*一阶低通滤波*/
+        adc_m0_val.mtor_ia_curent = low_pass_filter( 
+            adc_m0_val.mtor_ia_curent,
+            0.15f
+        );
+        adc_m0_val.mtor_ib_curent = low_pass_filter( 
+            adc_m0_val.mtor_ib_curent,
+            0.15f
+        );
+        set_vfoc_ia_current(adc_m0_val.mtor_ia_curent);
+        set_vfoc_ib_current(adc_m0_val.mtor_ib_curent);
+        set_vfoc_ic_current(-adc_m0_val.mtor_ia_curent-adc_m0_val.mtor_ib_curent);
 
         /*
          * 每100ms计算一次平均电流。
          */
-        int64_t now_time_us =
-            esp_timer_get_time();
+        // int64_t now_time_us = esp_timer_get_time();
 
-        if (zero_calibration_done &&
-            now_time_us - last_report_time_us >=
-                CURRENT_REPORT_PERIOD_US)
-        {
-            last_report_time_us =
-                now_time_us;
+        // if (zero_calibration_done && now_time_us - last_report_time_us >= CURRENT_REPORT_PERIOD_US)
+        // {
+        //     last_report_time_us = now_time_us;
 
-            for (int i = 0;
-                 i < CURRENT_ADC_CHANNEL_NUM;
-                 i++)
-            {
-                adc_channel_t channel =
-                    current_adc_channels[i];
+        //     ESP_LOGI(
+        //         TAG,
+        //         "m0: ia=%.3fA, ib=%.3fA, shunt_a=%.3fmV, shunt_b=%.3fmV | "
+        //         "m1: ia=%.3fA, ib=%.3fA, shunt_a=%.3fmV, shunt_b=%.3fmV\r\n",
+        //         adc_m0_val.mtor_ia_curent,
+        //         adc_m0_val.mtor_ib_curent,
+        //         adc_m0_val.ia_shunt_mv,
+        //         adc_m0_val.ib_shunt_mv,
 
-                /*
-                 * 当前通道没有新数据时跳过。
-                 */
-                if (s_report_count[channel] == 0)
-                {
-                    continue;
-                }
+        //         adc_m1_val.mtor_ia_curent,
+        //         adc_m1_val.mtor_ib_curent,
+        //         adc_m1_val.ia_shunt_mv,
+        //         adc_m1_val.ib_shunt_mv
+        //     );
 
-                /*
-                 * 计算100ms内的ADC平均值。
-                 */
-                uint32_t average_raw =
-                    s_report_sum[channel] /
-                    s_report_count[channel];
-
-                /*
-                 * 将ADC原始值转换成毫伏。
-                 */
-                int voltage_mv =
-                    current_adc_raw_to_mv(
-                        average_raw
-                    );
-
-                uint32_t sample_count =
-                    s_report_count[channel];
-
-                /* 有符号平均值，交流相电流正负可能互相抵消 */
-                float current_avg =
-                    s_current_sum[channel] /
-                    (float)sample_count;
-
-                /* 电流绝对值平均，能反映正负交替电流的平均幅度 */
-                float current_abs_avg =
-                    s_current_abs_sum[channel] /
-                    (float)sample_count;
-
-                /* RMS有效值，能反映电流的发热和实际能量大小 */
-                float current_rms =
-                    sqrtf(
-                        s_current_square_sum[channel] /
-                        (float)sample_count
-                    );
-
-                ESP_LOGI(
-                    TAG,
-                    "%s: n=%" PRIu32
-                    ",raw_avg=%" PRIu32
-                    ",voltage_avg=%dmV"
-                    ",instant=%.3fA"
-                    ",avg=%.3fA"
-                    ",min=%.3fA"
-                    ",max=%.3fA"
-                    ",abs_avg=%.3fA"
-                    ",rms=%.3fA",
-                    current_adc_get_name(channel),
-                    sample_count,
-                    average_raw,
-                    voltage_mv,
-                    s_current_latest[channel],
-                    current_avg,
-                    s_current_min[channel],
-                    s_current_max[channel],
-                    current_abs_avg,
-                    current_rms
-                );
-
-                /*
-                 * 清空当前通道统计数据，
-                 * 开始下一个100ms统计周期。
-                 */
-                s_report_sum[channel] = 0;
-                s_report_count[channel] = 0;
-                s_current_latest[channel] = 0.0f;
-                s_current_sum[channel] = 0.0f;
-                s_current_abs_sum[channel] = 0.0f;
-                s_current_square_sum[channel] = 0.0f;
-                s_current_min[channel] = FLT_MAX;
-                s_current_max[channel] = -FLT_MAX;
-            }
-
-            /*
-             * 定期检查任务剩余栈。
-             */
-            ESP_LOGD(
-                TAG,
-                "电流任务剩余栈：%u字节",
-                (unsigned int)
-                uxTaskGetStackHighWaterMark(NULL)
-            );
-        }
+        //     /*
+        //      * 定期检查任务剩余栈。
+        //      */
+        //     ESP_LOGD(
+        //         TAG,
+        //         "电流任务剩余栈：%u字节",
+        //         (unsigned int)
+        //         uxTaskGetStackHighWaterMark(NULL)
+        //     );
+        // }
     }
 
+
+    ESP_LOGE(TAG,
+            "motor_current_adc_task_error! \r\n"
+    );
     /*
      * 正常情况下不会运行到这里。
      */
@@ -866,11 +815,11 @@ void motor_get_current_main(void)
     task_ret = xTaskCreatePinnedToCore(
         motor_current_adc_task,                 /* 任务入口函数 */
         "motor_current_adc_task",               /* 任务名称 */
-        CURRENT_ADC_TASK_STACK_SIZE,      /* 任务栈大小 */
+        MOTOR_CURRENT_TASK_STACK,      /* 任务栈大小 */
         NULL,                             /* 任务参数 */
-        CURRENT_ADC_TASK_PRIORITY,        /* 任务优先级 */
+        MOTOR_CURRENT_ADC_TASK_PRIO,        /* 任务优先级 */
         &motor_current_adc_task_handle,         /* 保存任务句柄 */
-        CURRENT_ADC_TASK_CORE             /* 固定CPU核心 */
+        MOTOR_CURRENT_TASK_CORE             /* 固定CPU核心 */
     );
 
     if (task_ret != pdPASS)
@@ -881,7 +830,7 @@ void motor_get_current_main(void)
          * 创建失败后停止程序，
          * 防止后续代码在没有电流采样的情况下运行。
          */
-        abort();
+
     }
 
     ESP_LOGI(

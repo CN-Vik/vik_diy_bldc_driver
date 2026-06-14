@@ -22,6 +22,10 @@
 #include "vik_foc_pid.h"
 #include <math.h>
 #include "esp_timer.h"
+#include "app_rtos_resource.h"
+#include "motor_power.h"
+#include "app_rtos_config.h"
+
 
 static const char *TAG = "M0_FD6287";
 
@@ -113,20 +117,29 @@ compare范围：大约 0 ~ 500
 #define GPTIMER_MS(ms)      (ms * GPTIMER_US(1000) )
 #define GPTIMER_S(s)        (s * GPTIMER_MS(1000)  )
 
-/*
- * 栅极驱动芯片使能脚。
- * 很多三相驱动板会有一个 EN 引脚，用来总开关 MOSFET 驱动输出。
- * enable = true  时，允许驱动 MOSFET。
- * enable = false 时，关闭驱动输出，电机不再受控输出。
- */
-#define VBUS_EN_GPIO         12
+
 
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
 #define UQ_LIMIT            3.2f      // 初期限制 ±1.2V
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
 
-#define SPEED_I_OUT_LIMIT  1.5f
+#define SPEED_I_OUT_LIMIT   1.5f
+#define CURENT_I_OUT_LIMIT  0.3f
+// #define MOTOR0_UQ_DIR   (-1.0f)
+/*
+ * Uq输出方向修正：
+ * 用来让 Uq_cmd 对应你想要的电机机械方向。
+ */
+#define MOTOR0_UQ_DIR          (1.0f)
+
+/*
+ * 正转对应的Iq方向：
+ * 如果实测正转时 Iq 是负数，这里就填 -1。
+ * 如果实测正转时 Iq 是正数，这里就填 +1。
+ */
+#define MOTOR0_FORWARD_IQ_DIR  (-1.0f)
+
 
 
 // 360° 环形期望值限幅（自动绕回）
@@ -170,29 +183,6 @@ static gptimer_handle_t s_m0_ctrl_timer = NULL;
  *   初始值NULL表示未创建任务 */
 static TaskHandle_t s_m0_foc_task_handle = NULL;
 
-
-
-
-/*
- * 初始化栅极驱动芯片 EN 引脚。
- */
-void vbus_en_io_init(void)
-{
-    gpio_config_t drv_en_config = {
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = 1ULL << VBUS_EN_GPIO,
-    };
-    ESP_ERROR_CHECK(gpio_config(&drv_en_config));
-}
-
-/*
- * 打开或者关闭三相驱动输出。
- */
-void vbus_enable(bool enable)
-{
-    ESP_LOGI(TAG, "%s MOSFET gate", enable ? "Enable" : "Disable");
-    gpio_set_level(VBUS_EN_GPIO, enable);
-}
 
 
 
@@ -523,173 +513,432 @@ static float angle_error_deg(float expct_deg, float current_deg)
     return err;
 }
 
+
 /**
- * @brief 函数执行周期-1ms
+ * @brief PID运算
  * 
- * @param arg 
- */
-static void m0_foc_control_task(void *arg)
-{
-    pwm_duty_t pwm_duty;
-
-    float uq = 0.0f;
-    float exp_angle = 10.0f;/*期望角度值*/
-    float now_angle = 0.0f;
-    float err_angle = 0.0f;
-    float last_err_angle = 0.0f;
-    
-    float exp_motor_rpm = 89.0f;/*期望电机转速值*/
-    float now_motor_rpm = 0.0f;
-    float err_motor_rpm = 0.0f;/*rpm:(r/min)*/
-    float last_err_motor_rpm = 0.0f;/*上次转速误差*/
-
-    float kp = 0.02f;
-    float kp_out = 0.0f;/*比例控制输出*/
-        
-    float ki = 0.06f;/*0.001f ~ 0.005f;*/
-    float ki_err_sum = 0.0f;/*微分控制参数*/
-    float ki_out = 0.0f;/*积分控制输出*/
-    
-    float kd = 0.0f;/*0.001f ~ 0.005f;*/
-    float kd_err_parm = 0.0f;/*微分控制参数*/
-    float kd_out = 0.0f;/*微分控制输出*/
-
-    
-    uint32_t log_cnt = 0;
-
-    uint64_t stamp_time_us = 0;
-    uint64_t last_stamp_time_us = 0;
-
-
-    static uint64_t time_ms = 0;
-    static uint64_t time_s = 0;
-    static uint64_t time_min = 0;
-
-    /*位置式PID:(dt)
+ * @param kp 比例参数
+ * @param ki 积分参数
+ * @param ki_out_min 积分限幅最小值
+ * @param ki_out_max 积分限幅最大值
+ * @param kd 微分参数
+ * @param exp_v 期望值
+ * @param now_v 当前值
+ * @return float PID的输出值out
+ * 
+ *  位置式PID:(dt)
     u[k] = Kp * e[k] + Ki * sum(e[0..k]) * dt + Kd * (e[k] - e[k-1]) / dt
 
     // 增量式PID（FOC中更常用）
     delta_u[k] = Kp * (e[k] - e[k-1]) + Ki * e[k] * dt + Kd * (e[k] - 2*e[k-1] + e[k-2]) / dt
     u[k] = u[k-1] + delta_u[k]
-    */
+ */
+float vfoc_pid_calute(  float kp,
+                        float ki,
+                        float ki_out_min,
+                        float ki_out_max,
+                        float kd,
+                        float exp_v,
+                        float now_v)
+{
+
+    int64_t stamp_time_us = esp_timer_get_time();/*单位us*/
+    static int64_t last_stamp_time_us = 0;
     float dt_s = 0.0f;/*pid计算时间间隔，单位s*/
 
+    float err_now = exp_v - now_v;/*当前误差 = 期望值-当前值*/
+    static float last_err = 0.0f;/*上次误差值*/
+    
+    float kp_out = 0.0f;/*比例输出*/
+
+    float ki_out = 0.0f;/*积分输出*/
+    static float ki_err_sum = 0.0f;
+    
+    float kd_out = 0.0f;/*微分输出*/
+    float kd_parm = 0.0f;
+    
+    float pid_out = 0.0f;/*PID整体结果输出*/
+
+
+    /*
+     * 第一次调用：
+     * 只初始化时间和误差，不计算I和D。
+     * 防止第一次dt异常导致积分/微分突变。
+     */
+    if (last_stamp_time_us==0)
+    {/*第一次不计算时间,第一次的last_stamp_time_us=0，计算出的时间有问题的*/
+
+        last_stamp_time_us = stamp_time_us; 
+        last_err = err_now;/*更新上次误差值*/
+
+        /*比例部分*/
+        kp_out = (kp * err_now);
+        return kp_out;/*第一次只计算比例*/
+    }
+    
+    /*
+     * 计算PID调用间隔。
+     * esp_timer_get_time()单位是us，这里转换成s。
+    */
+    dt_s = (float)((stamp_time_us - last_stamp_time_us)/(1000000.0f));/*us转化成s*/
+
+    /*
+     * dt保护。
+     * 防止dt太小导致D项爆炸。
+     * 如果你的FOC控制周期是1kHz，可以默认按0.001s处理。
+     */
+    if (dt_s <= 0.000001f || dt_s > 1.0f)
+    {
+        dt_s = 0.001f;
+    }
+
+    /*比例部分*/
+    kp_out = (kp * err_now);
+
+    /*
+     * 积分部分。
+     * 重点：限制积分累加值，而不是只限制ki_out。
+     */
+    if ((ki > 0.000001f) || (ki < -0.000001f))
+    {
+        float ki_err_sum_min = ki_out_min / ki;
+        float ki_err_sum_max = ki_out_max / ki;
+
+        /*
+         * 如果ki是负数，上面除完以后min/max可能反过来，所以这里修正一下。
+         */
+        if (ki_err_sum_min > ki_err_sum_max)
+        {
+            float temp = ki_err_sum_min;
+            ki_err_sum_min = ki_err_sum_max;
+            ki_err_sum_max = temp;
+        }
+
+        ki_err_sum += (err_now * dt_s);
+        ki_err_sum = limit_float(ki_err_sum, ki_err_sum_min, ki_err_sum_max);
+
+        ki_out = ki * ki_err_sum;
+    }
+    else
+    {
+        /*
+         * ki为0时，不做积分。
+         * 防止ki以后重新打开时，旧积分突然冒出来。
+         */
+        ki_err_sum = 0.0f;
+        ki_out = 0.0f;
+    }
+
+    /*kd微分参数:本次误差值-上一次误差值*/
+    kd_parm = err_now - last_err;
+    kd_out = (kd * (kd_parm / dt_s));
+
+    pid_out = kp_out + ki_out +kd_out;
+
+    last_stamp_time_us = stamp_time_us; 
+    last_err = err_now;/*更新上次误差值*/
+
+    return pid_out;
+}
+
+
+/**
+ * @brief 位置环
+ * 
+ */
+void vfoc_position_loop(void)
+{
+    float now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
+
+    // 第三，如果用在位置环角度控制，err_now = exp_v - now_v 暂时不适合处理 0°/360° 跨界。速度环没问题，位置环后面要换成：
+
+    // err_now = angle_error_deg(exp_v, now_v);
+
+    // LIMIT_EXP_MECH_360(exp_angle);
+    // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
+    // now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+    // err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
+
+}
+
+/**
+ * @brief 速度环
+ * 
+ */
+void vfoc_speed_loop(void)
+{
+    float now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+
+}
+
+
+/**
+ * @brief 电流环
+ * 
+ * @return float PID算出的Uq值
+ */
+park_parm_t vfoc_curent_loop(void)
+{
+    park_parm_t l_temp_park_v = {0};
+
+    /*获取三相实际电流值，已经过低通滤波*/
+    float motor_ia = get_vfoc_ia_current();
+    float motor_ib = get_vfoc_ib_current();
+    float motor_ic = get_vfoc_ic_current();
+
+    /*clark变换*/
+    clark_parm_t clark_temp = clark_tansform(
+        motor_ia,
+        motor_ib,
+        motor_ic
+    );
+
+    /*获取电角度*/
+    float theta_e_temp = get_vfoc_theta_e_rad();
+
+    /*park变换*/
+    park_parm_t park_temp = park_tansform(
+        clark_temp.I_alpha,
+        clark_temp.I_beta,
+        theta_e_temp
+    );
+
+    float now_iq = park_temp.Uq;/*当前实际的Uq值*/
+
+    /*当前电源每V电压支持0.071A， 0.071A/V，
+    12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
+    6.93*0.071A=0.49A
+    或者直接uq=6.93V,测试堵转电流值*/
+    float exp_iq = 0.40f;/*期望iq值*/
+
+
+    float kp = 0.99f;
+    float ki = 0.0f;/*0.001f ~ 0.005f;*/
+    float kd = 0.0f;/*0.001f ~ 0.005f;*/
+    
+    /**
+     * @brief FOC电流环_Iq_PI控制
+     * 
+     */
+    float pid_out_uq = vfoc_pid_calute(
+        kp,
+        ki,
+        -CURENT_I_OUT_LIMIT,
+        +CURENT_I_OUT_LIMIT,
+        kd,
+        exp_iq,/*expect:0.8A*/
+        now_iq
+    );
+
+
+    float exp_id = 0.0f;/*期望id值*/
+    float now_id = park_temp.Ud;/*当前实际的Uq值*/
+    kp = 0.3f;
+    ki = 0.01f;
+    kd = 0.0f;
+
+    /**
+     * @brief FOC电流环_Id_PI控制
+     * 
+     */
+    float pid_out_ud = vfoc_pid_calute(
+        kp,
+        ki,
+        -CURENT_I_OUT_LIMIT,
+        +CURENT_I_OUT_LIMIT,
+        kd,
+        exp_id,/*expect:0.8A*/
+        now_id
+    );
+
+    /*输出uq限幅*/
+    pid_out_uq = limit_float(pid_out_uq, -UQ_LIMIT, +UQ_LIMIT);
+    // float uq_cmd = MOTOR0_FORWARD_IQ_DIR * pid_out_uq;
+    float uq_cmd = 3.5;
+    
+    l_temp_park_v.Uq = uq_cmd;
+    // l_temp_park_v.Uq = pid_out_uq;
+    l_temp_park_v.Ud = pid_out_ud;
+
+    /*
+     * 统计平均绝对值，避免只看某一个瞬时点。
+     * 因为 ia/ib/ic/iq 是交流量，单点日志可能刚好采到过零点。
+     */
+    static uint32_t log_cnt = 0;
+
+    static float ia_abs_sum = 0.0f;
+    static float ib_abs_sum = 0.0f;
+    static float ic_abs_sum = 0.0f;
+    static float id_abs_sum = 0.0f;
+    static float iq_abs_sum = 0.0f;
+
+    ia_abs_sum += fabsf(motor_ia);
+    ib_abs_sum += fabsf(motor_ib);
+    ic_abs_sum += fabsf(motor_ic);
+    id_abs_sum += fabsf(now_id);
+    iq_abs_sum += fabsf(now_iq);
+
+    log_cnt++;
+
+    if (log_cnt >= 100)
+    {
+        float ia_abs_avg = ia_abs_sum / (float)log_cnt;
+        float ib_abs_avg = ib_abs_sum / (float)log_cnt;
+        float ic_abs_avg = ic_abs_sum / (float)log_cnt;
+        float id_abs_avg = id_abs_sum / (float)log_cnt;
+        float iq_abs_avg = iq_abs_sum / (float)log_cnt;
+
+        float iq_err = exp_iq - now_iq;
+        float id_err = exp_id - now_id;
+
+        ESP_LOGI(
+            TAG,
+            "cur_loop: "
+            "uq_cmd=%.3fV, ud_cmd=%.3fV, "
+            "uq_pid=%.3fV, ud_pid=%.3fV, "
+            "iq_ref=%.3fA, iq_now=%.3fA, iq_err=%.3fA, "
+            "id_ref=%.3fA, id_now=%.3fA, id_err=%.3fA, "
+            "ia=%.3fA, ib=%.3fA, ic=%.3fA, "
+            "iq_abs_avg=%.3fA, id_abs_avg=%.3fA, "
+            "ia_abs_avg=%.3fA, ib_abs_avg=%.3fA, ic_abs_avg=%.3fA, "
+            "theta=%.3frad",
+            uq_cmd,
+            pid_out_ud,
+            pid_out_uq,
+            pid_out_ud,
+            exp_iq,
+            now_iq,
+            iq_err,
+            exp_id,
+            now_id,
+            id_err,
+            motor_ia,
+            motor_ib,
+            motor_ic,
+            iq_abs_avg,
+            id_abs_avg,
+            ia_abs_avg,
+            ib_abs_avg,
+            ic_abs_avg,
+            theta_e_temp
+        );
+
+        log_cnt = 0;
+        ia_abs_sum = 0.0f;
+        ib_abs_sum = 0.0f;
+        ic_abs_sum = 0.0f;
+        id_abs_sum = 0.0f;
+        iq_abs_sum = 0.0f;
+    }
+    
+
+    return l_temp_park_v;
+}
+
+/**
+ * @brief 力矩环
+ * 
+ */
+void vfoc_torque_loop(void)
+{
+        // LIMIT_EXP_MECH_360(exp_angle);
+    // now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
+    // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
+    // now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+    // err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
+    
+}
+
+
+/**
+ * @brief M0 FOC控制任务
+ *
+ * 当前执行周期：
+ *      1ms / 1kHz
+ *
+ * 当前用途：
+ *      调试阶段可以用于低速电流环/力矩环验证。
+ *
+ * 频率建议：
+ *
+ *      PWM频率：
+ *          40kHz
+ *
+ *      ADC采样率：
+ *          总采样率 80kHz
+ *          4路轮询，平均每路约 20kHz
+ *
+ *      电流环：
+ *          当前 1kHz，可以先调通流程
+ *          后续建议提高到 5kHz
+ *          如果性能允许，再考虑 10kHz
+ *
+ *      速度环：
+ *          不需要几kHz
+ *          通常 200Hz ~ 1kHz 即可
+ *
+ *      位置环：
+ *          不需要几kHz
+ *          通常 50Hz ~ 500Hz 即可
+ *
+ *      角度采样：
+ *          AS5600 I2C 读取建议 500Hz ~ 1kHz
+ *          如果I2C提高到400kHz并且读取稳定，可以维持1kHz
+ *
+ * 注意：
+ *      电流环频率应高于速度环和位置环。
+ *      速度环/位置环不要和电流环同频硬跑，否则容易浪费CPU并引入噪声。
+ * 
+ * 
+PWM频率：        20kHz ~ 40kHz
+
+ADC采样：        每路 10kHz ~ 20kHz
+
+电流环：         5kHz ~ 10kHz
+                初期可以 1kHz 先调通
+
+速度环：         200Hz ~ 1kHz
+
+位置环：         50Hz ~ 500Hz
+
+角度采样：       500Hz ~ 1kHz
+ * 
+ *
+ * @param arg 任务参数，当前未使用
+ */
+static void m0_foc_control_task(void *arg)
+{
+    pwm_duty_t pwm_duty;
+
+    /*
+    * 只调用一次电流环。
+    * 不能写 vfoc_curent_loop().Uq / vfoc_curent_loop().Ud，
+    * 那样会执行两次电流环。
+    */
+    park_parm_t vdq_cmd = {0};
+    
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (stamp_time_us)
-        {/*第一次不计算时间,第一次的last_stamp_time_us=0，计算出的时间有问题的*/
-            stamp_time_us = esp_timer_get_time();/*单位us*/
-            dt_s = (float)((stamp_time_us - last_stamp_time_us)/(1000000.0f));
-        }else{
-            
-            stamp_time_us = esp_timer_get_time();/*单位us*/
-            dt_s = (float)(1.0f);
-        }
 
-        time_ms++;
-        // exp_angle++;
-
-        // 60ms = 1秒计数
-        if (time_ms >= 60)
-        {
-            time_ms = 0;  // 清零，不是取余！
-            time_s++;
-
-            // 60秒 = 1分钟
-            if (time_s >= 60)
-            {
-                time_s = 0;
-                time_min++;
-            }
-        }
-        
-        // LIMIT_EXP_MECH_360(exp_angle);
-
-        // now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
-        // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
-        now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
-        err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
-        /*速度死区，这样速度在 97 ~ 103 rpm 之间就不要来回调整 Uq 了，声音会安静很多。*/
-        /*
-        * 4. 死区处理
-        */
-        if (fabsf(err_motor_rpm) < SPEED_DEADBAND_RPM)
-        {
-            err_motor_rpm = 0.0f;
-
-            /*
-            * 误差很小时，积分慢慢释放一点，防止来回顶。
-            */
-            ki_err_sum *= 0.98f;
-        }
-        else
-        {
-            /*
-            * 5. 积分
-            */
-            ki_err_sum += (err_motor_rpm * dt_s);
-        }
-
-        kp_out = (kp * err_motor_rpm);
-
-        ki_out = (ki * ki_err_sum);
-        /*积分限幅*/
-        ki_out = limit_float(ki_out, -SPEED_I_OUT_LIMIT, SPEED_I_OUT_LIMIT);
-        /* 反推积分，防止 ki_err_sum 内部继续无限变大 */
-        if (ki > 0.000001f)
-        {
-            ki_err_sum = ki_out / ki;
-        }
-
-        /*kd微分参数:本次误差值-上一次误差值*/
-        // kd_err_parm = err_angle - last_err_angle;
-        kd_err_parm = err_motor_rpm - last_err_motor_rpm;
-        kd_out = (kd * kd_err_parm / dt_s);
-        
-
-        // uq = (kp * err_angle) + (kd * kd_err_parm);
-        uq = kp_out + ki_out + kd_out;
-        uq *= -1;
-        // ESP_LOGI(TAG,
-        //         " uq: %.2f\r\n",
-        //         uq
-        // );
-        /* 限制 Uq 最大输出，防止上电/大误差时力矩过猛 */
-        uq = limit_float(uq, -UQ_LIMIT, UQ_LIMIT);
-        
-        if (++log_cnt >= 100)
-        {
-            log_cnt = 0;
-
-            ESP_LOGI(TAG,
-                    "uq: %.2f,%.2f,%.2f,%.2f,%.2f,%.5f\r\n",
-                    uq,
-                    kp,
-                    exp_motor_rpm,/*期望转速*/
-                    now_motor_rpm,/*现在转速*/
-                    err_motor_rpm /*转速误差*/,
-                    dt_s
-            );
-        }
+        vdq_cmd = vfoc_curent_loop();
 
         /*
          * 如果发现电机远离目标，把 uq 改成 -uq，
          * 或者修正编码器方向/电角度方向。
          */
-        vfoc_set_svpwm(uq,
-                       M0_TEST_UD,
-                       MOTOR_DRV_VBUS);
+        vfoc_set_svpwm(
+            vdq_cmd.Uq,
+            vdq_cmd.Ud,
+            MOTOR_DRV_VBUS
+        );
 
-        pwm_duty = vfoc_get_pwm_duty();
+        m0_fd6287_set_duty(
+            vfoc_get_pwm_duty().duty_Ua,
+            vfoc_get_pwm_duty().duty_Ub,
+            vfoc_get_pwm_duty().duty_Uc
+        );
 
-        m0_fd6287_set_duty(pwm_duty.duty_Ua,
-                           pwm_duty.duty_Ub,
-                           pwm_duty.duty_Uc);
-
-        last_stamp_time_us = stamp_time_us; 
-
-        last_err_motor_rpm = err_motor_rpm;/*更新上次误差值*/
     }
 }
 esp_err_t m0_fd6287_foc_start(void)
@@ -701,11 +950,11 @@ esp_err_t m0_fd6287_foc_start(void)
     xTaskCreatePinnedToCore(
         m0_foc_control_task,        /* 任务函数指针：FOC 电机控制主循环函数（无限循环） */
         "m0_foc_task",              /* 任务名称：调试时方便识别，无实际功能 */
-        4096*2,                      /* 任务堆栈大小：分配 4096 字节栈空间（ESP32 单位是字，不是字节） */
+        MO_FOC_CONTROL_TASK_STACK,  /* 任务堆栈大小：分配 4096 字节栈空间（ESP32 单位是字，不是字节） */
         NULL,                       /* 任务入参：不需要传递参数，填 NULL */
-        20,                         /* 任务优先级：20级（最高优先级，保证电机控制实时性） */
+        MO_FOC_CONTROL_TASK_PRIO,   /* 任务优先级：20级（最高优先级，保证电机控制实时性） */
         &s_m0_foc_task_handle,      /* 任务句柄：输出参数，保存创建的任务句柄，用于后续任务管理 */
-        1                           /* 绑定CPU核心：指定任务**只运行在 CPU 1** 上 */
+        MO_FOC_CONTROL_TASK_CORE    /* 绑定CPU核心：指定任务**只运行在 CPU 1** 上 */
     );
 
     /*
@@ -757,14 +1006,40 @@ esp_err_t m0_fd6287_foc_start(void)
                     )
     );
 
+    /*开启电机MOS*/
+    if ( !motor_power_is_enabled() )
+    {/*没打开电机MOS 死等打开MOS*/
+
+        if (g_app_event_group)
+        {
+            EventBits_t bits;
+            /*
+            * 第一步：
+            * 等待电流零漂校准完成。
+            *
+            * 如果零漂没完成，这里会阻塞等待。
+            */
+            bits = xEventGroupWaitBits(
+                g_app_event_group,
+                APP_EVT_MOS_ENABLED,
+                pdFALSE,                        /* 不清除事件位 */
+                pdTRUE,                         /* 等待全部指定bit，这里只有一个bit */
+                pdMS_TO_TICKS(5000) /*等待时间5s*/
+            );
+    
+            if ((bits & APP_EVT_MOS_ENABLED) == 0)
+            {
+                ESP_LOGE(TAG, "等待电流零漂校准完成超时,禁止打开MOS");
+                ESP_LOGE(TAG, "foc_start_MOS打开失败,禁止启动电机\r\n");
+            }
+        }
+    }
+
     /*
      * 5. 启动 GPTimer。
      */
     ESP_ERROR_CHECK(gptimer_enable(s_m0_ctrl_timer));
     ESP_ERROR_CHECK(gptimer_start(s_m0_ctrl_timer));
-
-    vbus_en_io_init();
-    vbus_enable(true);/*打开VBUS*/
 
     ESP_LOGI(TAG,
              "M0 FOC started, ctrl_freq=%dHz",

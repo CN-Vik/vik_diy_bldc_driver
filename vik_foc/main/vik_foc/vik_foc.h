@@ -89,6 +89,10 @@ typedef struct
     float Ua;
     float Ub;
     float Uc;
+
+    float iq;
+    float id;
+
     pwm_duty_t pwm_duty_val;
     float mech_rpm;/*机械角度转速*/
     float mech_w;/*机械角速度*/
@@ -165,10 +169,15 @@ typedef enum
 
 } vfoc_status_t;
 
-
+float get_vfoc_theta_e_rad(void);
+float low_pass_filter(float input, float alpha);
+void vfoc_set_motor_drv_iq(float uq);
+float vfoc_get_motor_drv_iq(void);
 void vfoc_init(void);
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s);
+clark_parm_t clark_tansform(float ia, float ib, float ic);
 motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v);
+park_parm_t park_tansform(float I_alpha, float I_beta, float theta_e_rad);
 clark_parm_t park_inv_transform(const foc_data_t *foc_v);
 pwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus);
 void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
@@ -199,6 +208,13 @@ void set_vfoc_mech_w(float mech_w);
 float get_vfoc_mech_w(void);
 void set_vfoc_mech_rpm(float mech_rm);
 float get_vfoc_mech_rpm(void);
+
+void set_vfoc_ia_current(float curent);
+void set_vfoc_ib_current(float curent);
+void set_vfoc_ic_current(float curent);
+float get_vfoc_ia_current(void);
+float get_vfoc_ib_current(void);
+float get_vfoc_ic_current(void);
 
 
 #endif

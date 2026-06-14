@@ -1404,7 +1404,11 @@ float get_motor_rpm_by_angle(float now_angle)
     return rpm_lpf;
 }
 
-
+/**
+ * @brief 机械角度，电角度，速度采样率1KHZ
+ * 
+ * @param arg 
+ */
 static void motor_encoder_angle_task(void *arg)
 {
     float angle = 0.0f;
