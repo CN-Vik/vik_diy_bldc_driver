@@ -30,7 +30,7 @@
  */
 /* ADC读取任务优先级 */
 #define MOTOR_CURRENT_ADC_TASK_PRIO      20
-#define MO_FOC_CONTROL_TASK_PRIO   8
+#define MO_SET_PWM_TASK_PRIO   8
 
 
 /*
@@ -40,7 +40,7 @@
 #define MOTOR_CONTROL_TASK_STACK   (8 * 1024)
 #define UART_PRINT_TASK_STACK      (4 * 1024)
 #define WIFI_TASK_STACK            (6 * 1024)
-#define MO_FOC_CONTROL_TASK_STACK  (8 * 1024) /*8K Byte*/
+#define MO_SET_PWM_TASK_STACK  (8 * 1024) /*8K Byte*/
 
 
 
@@ -54,7 +54,7 @@
 #define MOTOR_CURRENT_TASK_CORE    APP_TASK_CORE_0
 #define MOTOR_CONTROL_TASK_CORE    APP_TASK_CORE_1
 #define UART_PRINT_TASK_CORE       APP_TASK_CORE_0
-#define MO_FOC_CONTROL_TASK_CORE   APP_TASK_CORE_0
+#define MO_SET_PWM_TASK_CORE   APP_TASK_CORE_0
 
 
 #endif

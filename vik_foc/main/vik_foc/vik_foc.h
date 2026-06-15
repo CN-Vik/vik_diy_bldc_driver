@@ -45,6 +45,41 @@
 #define VFOC_FLOAT_EPSILON     1.0e-6f
 
 
+// 360° 环形期望值限幅（自动绕回）
+#define LIMIT_EXP_MECH_360(exp_mech)                \
+do {                                            \
+    while ((exp_mech) >= 360.0f) (exp_mech) -= 360.0f; \
+    while ((exp_mech) < 0.0f)    (exp_mech) += 360.0f; \
+} while(0)
+
+
+
+
+/**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
+#define UQ_LIMIT            3.2f      // 初期限制 ±1.2V
+#define POS_DEADBAND_DEG    0.5f      // 小误差死区
+#define SPEED_DEADBAND_RPM  3.0f
+
+#define SPEED_I_OUT_LIMIT   1.5f
+#define CURENT_I_OUT_LIMIT  0.3f
+// #define MOTOR0_UQ_DIR   (-1.0f)
+/*
+ * Uq输出方向修正：
+ * 用来让 Uq_cmd 对应你想要的电机机械方向。
+ */
+#define MOTOR0_UQ_DIR          (1.0f)
+
+/*
+ * 正转对应的Iq方向：
+ * 如果实测正转时 Iq 是负数，这里就填 -1。
+ * 如果实测正转时 Iq 是正数，这里就填 +1。
+ */
+#define MOTOR0_FORWARD_IQ_DIR  (-1.0f)
+
+
+
+
+
 /**
  * @brief 克拉克变换参数
  * 
@@ -169,7 +204,7 @@ typedef enum
 
 } vfoc_status_t;
 
-float get_vfoc_theta_e_rad(void);
+float get_vfoc_theta_e_rad(float m_angle);
 float low_pass_filter(float input, float alpha);
 void vfoc_set_motor_drv_iq(float uq);
 float vfoc_get_motor_drv_iq(void);

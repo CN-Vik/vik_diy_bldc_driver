@@ -39,65 +39,19 @@ as5600_test_conf_readback();      // 测试配置寄存器读写
 零点一般是在电机安装、校准阶段设置一次，运行过程中主要是高速读取角度。
  */
 
-#include <stdio.h>
-#include <stdbool.h>
+#include "motor_angle_acqu.h"
 #include "as5600.h"
 #include "driver/i2c_master.h"
-#include "esp_log.h"
 #include <stdbool.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
 
-/*角度抖动误差*/
-#define AS5600_ANGLE_DEADBAND_DEG   0.12f
+
+static const char *TAG = "AS5600";
 
 
-#define AS5600_CHECK_CONF_FIELD_EQ(field)                          \
-    do                                                             \
-    {                                                              \
-        if (conf_write.field != conf_read.field)                   \
-        {                                                          \
-            ESP_LOGE(TAG, #field " mismatch: write=%d, read=%d",   \
-                     (int)conf_write.field, (int)conf_read.field); \
-            return ESP_FAIL;                                       \
-        }                                                          \
-    } while (0)
-
-/* ========================== I2C 硬件引脚配置 ========================== */
-
-/*
- * I2C SCL 时钟线 GPIO。
- *
- * 注意：
- * 这里 GPIO18 / GPIO19 要和你实际硬件连线一致。
- * AS5600 的 SCL 接 ESP32 的 GPIO18。
- */
-#define I2C_MASTER_SCL_IO 18
-
-/*
- * I2C SDA 数据线 GPIO。
- *
- * AS5600 的 SDA 接 ESP32 的 GPIO19。
- */
-#define I2C_MASTER_SDA_IO 19
-
-/*
- * 使用 ESP32 的 I2C0 控制器。
- *
- * ESP32 一般有 I2C_NUM_0 和 I2C_NUM_1 两组 I2C 控制器。
- */
-#define I2C_MASTER_NUM I2C_NUM_0
-
-/*
- * I2C 通信频率。
- *
- * AS5600 支持标准 I2C 通信，这里使用 100kHz，属于比较稳妥的低速配置。
- *
- * 100 * 1000 = 100000 Hz = 100 kHz
- */
-#define I2C_MASTER_FREQ_HZ 399 * 1000 /* 399KHZ */
 
 /* ========================== 磁铁状态字符串表 ========================== */
 
@@ -118,41 +72,34 @@ static const char *const s_as5600_magnet_status_str[] = {
     [AS5600_MAGNET_NOT_DETECTED] = "not detected",
 };
 
-/*
- * 计算磁铁状态字符串表的元素个数。
- *
- * sizeof(数组) / sizeof(数组元素) 是 C 语言里常见的数组长度计算方式。
- */
-#define AS5600_MAGNET_STATUS_STR_COUNT \
-    (sizeof(s_as5600_magnet_status_str) / sizeof(s_as5600_magnet_status_str[0]))
-
-/* ========================== 零点校准参数 ========================== */
-
-/*
- * ZPOS 零点校准后的角度容差。
- *
- * 理论上：
- * 设置当前位置为零点后，再读取角度应该接近 0 度。
- *
- * 但是实际会有：
- * - AS5600 内部滤波延迟
- * - 磁铁安装偏差
- * - I2C 读取时刻误差
- * - 角度值在 0 / 360 度附近跳变
- *
- * 所以不能要求严格等于 0.00 度。
- * 这里允许 ±5 度范围。
- */
-#define AS5600_ZERO_CAL_TOL_DEG 5.0f
 
 
 
-static const char *TAG = "AS5600";
 
 extern void set_vfoc_theta_m_deg(float parm_angle);
 extern float get_vfoc_theta_m_deg(void);
 extern void set_vfoc_mech_w(float mech_w);
 void set_vfoc_mech_rpm(float mech_rm);
+
+
+
+/* ========================== 全局句柄 ========================== */
+
+/*
+ * AS5600 设备句柄。
+ *
+ * 驱动初始化成功后，会得到一个 as5600_handle_t。
+ * 后面读角度、读状态、写配置，都需要传入这个句柄。
+ */
+static as5600_handle_t as5600 = NULL;
+
+/*
+ * I2C 总线句柄。
+ *
+ * ESP-IDF 新版 I2C 驱动中，先创建 I2C bus，
+ * 再把具体 I2C 设备挂到这个 bus 上。
+ */
+static i2c_master_bus_handle_t bus_handle = NULL;
 
 
 
@@ -184,23 +131,6 @@ static bool as5600_degrees_near_zero_or_wrap_360(float deg, float tol_deg)
     return (deg <= tol_deg) || (deg >= 360.0f - tol_deg);
 }
 
-/* ========================== 全局句柄 ========================== */
-
-/*
- * AS5600 设备句柄。
- *
- * 驱动初始化成功后，会得到一个 as5600_handle_t。
- * 后面读角度、读状态、写配置，都需要传入这个句柄。
- */
-static as5600_handle_t as5600 = NULL;
-
-/*
- * I2C 总线句柄。
- *
- * ESP-IDF 新版 I2C 驱动中，先创建 I2C bus，
- * 再把具体 I2C 设备挂到这个 bus 上。
- */
-static i2c_master_bus_handle_t bus_handle = NULL;
 
 /* ========================== AS5600 初始化函数 ========================== */
 
@@ -989,7 +919,7 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
 
 
 /**
- * @brief 根据当前机械角度计算电机机械角速度 deg/s
+ * @brief 根据当前机械角度,计算电机,机械角速度 deg/s
  *
  * @details
  * 这个函数专门给 FOC 位置环的 D 项/阻尼项使用。
@@ -1719,13 +1649,13 @@ void motor_encoder_init(void)
     //     ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
     // }
 
-    xTaskCreatePinnedToCore(
-        motor_encoder_angle_task, // 任务函数
-        "encoder_angle_task",     // 任务名
-        4096 * 2,                 // 栈大小
-        NULL,                     // 参数
-        5,                        // 优先级
-        NULL,                     // 任务句柄
-        0                         // 跑在 core 0
-    );
+    // xTaskCreatePinnedToCore(
+    //     motor_encoder_angle_task, // 任务函数
+    //     "encoder_angle_task",     // 任务名
+    //     4096 * 2,                 // 栈大小
+    //     NULL,                     // 参数
+    //     5,                        // 优先级
+    //     NULL,                     // 任务句柄
+    //     0                         // 跑在 core 0
+    // );
 }

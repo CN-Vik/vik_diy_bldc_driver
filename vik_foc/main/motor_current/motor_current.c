@@ -36,6 +36,7 @@
 #include "app_rtos_resource.h"
 #include "motor_power.h"
 #include "app_rtos_config.h"
+#include "motor_angle_acqu.h"
 
 
 /*----------------------------------------------------------
@@ -59,6 +60,7 @@
 
 /*
  * ADC总采样率。
+    80KHZ
  *
  * ADC会依次轮询4个通道，因此：
  *
@@ -308,7 +310,7 @@ static bool current_adc_calibration_init(void)
  * @return true 
  * @return false 
  */
-static bool IRAM_ATTR current_adc_conv_done_cb( adc_continuous_handle_t adc_handle,
+static bool IRAM_ATTR adc_crent_20KHZ_cb( adc_continuous_handle_t adc_handle,
                                                 const adc_continuous_evt_data_t *edata,
                                                 void *user_data)
 {
@@ -495,7 +497,7 @@ static void motor_current_adc_task(void *arg)
      * ADC转换完成后，中断回调会通知当前任务。
      */
     adc_continuous_evt_cbs_t callbacks = {
-        .on_conv_done = current_adc_conv_done_cb,
+        .on_conv_done = adc_crent_20KHZ_cb,
     };
 
     ESP_ERROR_CHECK(
@@ -513,6 +515,14 @@ static void motor_current_adc_task(void *arg)
 
     ESP_LOGW(TAG, "开始四路电流零漂校准");
     ESP_LOGW(TAG, "校准期间必须关闭电机PWM,保证相电流为0A");
+
+    float mech_angle = 0.0f;/*机械角度,角度值*/
+    float mech_rpm = 0.0f;/*机械转速*/
+    float mech_w = 0.0f;
+    float elec_angle_rad = 0.0f;/*电角度值：弧度制*/
+
+    clark_parm_t clark_temp={0};
+    park_parm_t park_temp={0};
 
     while (1)
     {
@@ -727,33 +737,161 @@ static void motor_current_adc_task(void *arg)
             adc_m0_val.mtor_ib_curent,
             0.15f
         );
-        set_vfoc_ia_current(adc_m0_val.mtor_ia_curent);
-        set_vfoc_ib_current(adc_m0_val.mtor_ib_curent);
-        set_vfoc_ic_current(-adc_m0_val.mtor_ia_curent-adc_m0_val.mtor_ib_curent);
+        adc_m0_val.mtor_ic_curent = -adc_m0_val.mtor_ia_curent-adc_m0_val.mtor_ib_curent;
+        /*1.以上是三相电流值获取完成*/
+
+        /*2. clark变换,输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
+        clark_temp = clark_tansform(
+            adc_m0_val.mtor_ia_curent,
+            adc_m0_val.mtor_ib_curent,
+            adc_m0_val.mtor_ic_curent
+        );
+
+        /*3. 获取机械角度*/
+        if (!motor_encoder_get_angle(&mech_angle))
+        {
+            /*
+             * 每次读取角度后都计算转速
+             * 注意：不要放到 ESP_LOGI 里面算
+             */
+            mech_rpm = low_pass_filter( 
+                get_motor_rpm_by_angle(mech_angle),
+                0.20f
+            );
+            mech_w = low_pass_filter( 
+                get_motor_omega_deg_s_by_angle(mech_angle),
+                0.20f
+            );
+
+            /*计算电角度*/
+            elec_angle_rad = get_vfoc_theta_e_rad(mech_angle);
+            
+        }
+        else
+        {
+            ESP_LOGE(TAG, "motor_encoder_get_angle_failed!");
+        }
+
+        /*4.park变换*/
+        park_temp = park_tansform(
+            clark_temp.I_alpha,
+            clark_temp.I_beta,
+            elec_angle_rad
+        );
+
+        
+        /*当前电源每V电压支持0.071A， 0.071A/V，
+        12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
+        6.93*0.071A=0.49A
+        或者直接uq=6.93V,测试堵转电流值*/
+        float exp_iq = 0.40f;/*期望iq值*/
+        float now_iq = park_temp.Uq;/*当前实际的Uq值*/
+
+        float kp = 0.99f;
+        float ki = 0.0f;/*0.001f ~ 0.005f;*/
+        float kd = 0.0f;/*0.001f ~ 0.005f;*/
+
+        /**
+         * @brief FOC电流环_Iq_PI控制
+         * 
+         */
+        float pid_out_uq = vfoc_pid_calt_curent_iq(
+            kp,
+            ki,
+            -CURENT_I_OUT_LIMIT,
+            +CURENT_I_OUT_LIMIT,
+            kd,
+            exp_iq,/*expect:0.8A*/
+            now_iq
+        );
+
+
+        float exp_id = 0.0f;/*期望id值*/
+        float now_id = park_temp.Ud;/*当前实际的Uq值*/
+        kp = 0.3f;
+        ki = 0.01f;
+        kd = 0.0f;
+
+        /**
+         * @brief FOC电流环_Id_PI控制
+         * 
+         */
+        float pid_out_ud = vfoc_pid_calt_curent_id(
+            kp,
+            ki,
+            -CURENT_I_OUT_LIMIT,
+            +CURENT_I_OUT_LIMIT,
+            kd,
+            exp_id,/*expect:0.8A*/
+            now_id
+        );
+
+        /*输出uq限幅*/
+        pid_out_uq = limit_float(pid_out_uq, -UQ_LIMIT, +UQ_LIMIT);
+        // float uq_cmd = MOTOR0_FORWARD_IQ_DIR * pid_out_uq;
+        float uq_cmd = 6.5f;
+        float ud_cmd = 0.0f;
+
+        l_temp_park_v.Uq = uq_cmd;
+        // l_temp_park_v.Uq = pid_out_uq;
+        l_temp_park_v.Ud = ud_cmd;
 
         /*
-         * 每100ms计算一次平均电流。
-         */
-        // int64_t now_time_us = esp_timer_get_time();
+            * 统计平均绝对值，避免只看某一个瞬时点。
+            * 因为 ia/ib/ic/iq 是交流量，单点日志可能刚好采到过零点。
+            */
+        static uint32_t log_cnt = 0;
+        static float sum_ia_sq = 0.0f;
+        static float sum_ib_sq = 0.0f;
+        static float sum_ic_sq = 0.0f;
+        float is_amp = sqrtf(park_temp.Ud * park_temp.Ud + park_temp.Uq * park_temp.Uq);
 
-        // if (zero_calibration_done && now_time_us - last_report_time_us >= CURRENT_REPORT_PERIOD_US)
-        // {
-        //     last_report_time_us = now_time_us;
+        // 每次电流环执行都累加平方和
+        sum_ia_sq += motor_ia * motor_ia;
+        sum_ib_sq += motor_ib * motor_ib;
+        sum_ic_sq += motor_ic * motor_ic;
 
-        //     ESP_LOGI(
-        //         TAG,
-        //         "m0: ia=%.3fA, ib=%.3fA, shunt_a=%.3fmV, shunt_b=%.3fmV | "
-        //         "m1: ia=%.3fA, ib=%.3fA, shunt_a=%.3fmV, shunt_b=%.3fmV\r\n",
-        //         adc_m0_val.mtor_ia_curent,
-        //         adc_m0_val.mtor_ib_curent,
-        //         adc_m0_val.ia_shunt_mv,
-        //         adc_m0_val.ib_shunt_mv,
+        if (log_cnt++ >= 100)
+        {
+            // 求平均后开根号，得到这段时间内的有效值
+            float ia_rms = sqrtf(sum_ia_sq / 100.0f);
+            float ib_rms = sqrtf(sum_ib_sq / 100.0f);
+            float ic_rms = sqrtf(sum_ic_sq / 100.0f);
 
-        //         adc_m1_val.mtor_ia_curent,
-        //         adc_m1_val.mtor_ib_curent,
-        //         adc_m1_val.ia_shunt_mv,
-        //         adc_m1_val.ib_shunt_mv
-        //     );
+            ESP_LOGI(TAG, "I_rms: %.3f, %.3f, %.3f, %.3f, %.3f, %.3f\r\n",
+                    ia_rms, 
+                    ib_rms,
+                    ic_rms,
+                    fabsf(now_iq),
+                    fabsf(now_id),
+                    is_amp
+            );
+
+            // 清零累加器，准备下一轮统计
+            sum_ia_sq = 0.0f;
+            sum_ib_sq = 0.0f;
+            sum_ic_sq = 0.0f;
+
+            // ESP_LOGI(
+            //     TAG,
+            //     "uq: %.2f, %.2f, %.2f, %.2f, %.2f,%.2f,%.2f \r\n",
+            //     exp_iq,
+            //     now_iq,
+
+            //     exp_id,
+            //     now_id,
+
+            //     motor_ia,
+            //     motor_ib,
+            //     motor_ic
+            // );
+
+            log_cnt = 0;
+        }
+    
+
+
+
 
         //     /*
         //      * 定期检查任务剩余栈。
@@ -768,6 +906,8 @@ static void motor_current_adc_task(void *arg)
     }
 
 
+
+#if 0
     ESP_LOGE(TAG,
             "motor_current_adc_task_error! \r\n"
     );
@@ -785,6 +925,7 @@ static void motor_current_adc_task(void *arg)
     motor_current_adc_task_handle = NULL;
 
     vTaskDelete(NULL);
+#endif
 }
 
 /**

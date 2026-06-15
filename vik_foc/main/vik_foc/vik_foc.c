@@ -245,20 +245,22 @@ float get_vfoc_theta_m_deg(void)
 }
 
 
+
 /**
  * @brief vfoc获取电角度(弧度制)
  * 
- * @return float 
+ * @param m_angle 机械角度(角度值)
+ * @return float 电角度弧度制
  */
-float get_vfoc_theta_e_rad(void)
+float get_vfoc_theta_e_rad(float m_angle)
 {
     float elec_deg;/*电角度*/
 
     /*
      * 机械角度 -> 电角度
-        电角度=机械角度*电机磁极对数
+        电角度 = 机械角度 * 电机磁极对数
      */
-    elec_deg = get_vfoc_theta_m_deg() * vfoc_dt.motor_par.pole_pairs;
+    elec_deg = m_angle * vfoc_dt.motor_par.pole_pairs;
 
     /*
      * 限制到 0~360 度
@@ -1021,6 +1023,194 @@ float vfoc_get_motor_drv_iq(void)
 {
     return vfoc_dt.motor_drv_val.iq;
 }
+
+
+/**
+ * @brief 斜坡限速函数
+ *
+ * @details
+ * 这个函数的作用是：让 now 不要一下子跳到 target，
+ * 而是每次最多只变化 max_step。
+ *
+ * 举例：
+ * now = 0
+ * target = 60
+ * max_step = 1
+ *
+ * 每次调用结果：
+ * 0 -> 1 -> 2 -> 3 -> ... -> 60
+ *
+ * 这样可以避免：
+ * 1. 目标速度突然变化太大
+ * 2. Uq突然变化太大
+ * 3. 电机启动猛冲、超调、震动
+ * 
+ * 比如你 1ms 调用一次，想让目标速度每秒最多增加 80rpm，那每次最大步长就是：
+
+RPM_RAMP_PER_S * dt_s = 80.0f * 0.001f = 0.08rpm
+
+也就是目标速度会这样慢慢爬：
+
+0 -> 0.08 -> 0.16 -> 0.24 -> ... -> 60rpm
+ *
+ * @param now       当前值，比如当前目标速度、当前Uq
+ * @param target    最终想达到的目标值
+ * @param max_step  本次调用允许变化的最大步长，必须是正数
+ *
+ * @return float    限速后的新值
+ */
+static float ramp_float(float now, float target, float max_step)
+{
+    /*
+     * 计算目标值和当前值之间的差值。
+     *
+     * diff > 0：说明目标值比当前值大，需要往上增加。
+     * diff < 0：说明目标值比当前值小，需要往下降低。
+     */
+    float diff = target - now;
+
+    if (diff > max_step)
+    {
+        /*
+         * 如果差值大于最大允许变化量，
+         * 说明这次不能一下子加这么多，只允许最多增加 max_step。
+         *
+         * 例如：
+         * now = 0，target = 60，max_step = 1
+         * diff = 60
+         * 实际本次只允许 +1
+         */
+        diff = max_step;
+    }
+    else if (diff < -max_step)
+    {
+        /*
+         * 如果差值小于 -max_step，
+         * 说明目标值比当前值小很多，
+         * 这次不能一下子减太多，只允许最多减少 max_step。
+         *
+         * 例如：
+         * now = 60，target = 0，max_step = 1
+         * diff = -60
+         * 实际本次只允许 -1
+         */
+        diff = -max_step;
+    }
+
+    /*
+     * 当前值加上被限制后的变化量。
+     *
+     * 如果 target 离 now 很远：
+     *      每次只靠近 max_step。
+     *
+     * 如果 target 离 now 很近：
+     *      直接到达 target，不会来回震荡。
+     */
+    return now + diff;
+}
+
+static float limit_float(float x, float min, float max)
+{
+    if (x > max)
+    {
+        return max;
+    }
+
+    if (x < min)
+    {
+        return min;
+    }
+
+    return x;
+}
+
+/**
+ * @brief FOC位置控制角度误差计算
+ *        输入当前角度值，和期望角度值
+ * 
+ * 电机旋转方向：顺时针+正值，逆时针-负值
+ * 
+ * @param expct_deg 期望角度值
+ * @param current_deg 当前角度值
+ * @return float 输出的带旋转方向的误差角度值，eg: -45(逆时针旋转四十五度), 90(顺时针旋转90度)
+ */
+static float angle_error_deg(float expct_deg, float current_deg)
+{
+    /*误差值 = 期望值-当前值*/
+    float err = expct_deg - current_deg;
+
+    while (err > 180.0f)
+    {
+        err -= 360.0f;
+    }
+
+    while (err < -180.0f)
+    {
+        err += 360.0f;
+    }
+
+    return err;
+}
+
+
+
+/**
+ * @brief 位置环
+ * 
+ */
+void vfoc_position_loop(void)
+{
+    // float now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
+
+    // 第三，如果用在位置环角度控制，err_now = exp_v - now_v 暂时不适合处理 0°/360° 跨界。速度环没问题，位置环后面要换成：
+
+    // err_now = angle_error_deg(exp_v, now_v);
+
+    // LIMIT_EXP_MECH_360(exp_angle);
+    // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
+    // now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+    // err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
+
+}
+
+/**
+ * @brief 速度环
+ * 
+ */
+void vfoc_speed_loop(void)
+{
+    // float now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+
+}
+
+
+/**
+ * @brief 电流环
+ * 
+ * @return float PID算出的Uq值
+ */
+park_parm_t vfoc_curent_loop(void)
+{
+    park_parm_t l_temp_park_v = {0};
+
+
+    return l_temp_park_v;
+}
+
+/**
+ * @brief 力矩环
+ * 
+ */
+void vfoc_torque_loop(void)
+{
+        // LIMIT_EXP_MECH_360(exp_angle);
+    // now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
+    // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
+    // now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
+    // err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
+    
+}
+
 
 
 /**

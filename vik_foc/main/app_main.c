@@ -25,7 +25,7 @@
 #include "motor_power.h"
 #include "vik_foc.h"
 #include "vik_foc_pid.h"
-
+#include "motor_angle_acqu.h"
 
 
 static const char *TAG = "vik_foc_example_main";
@@ -33,7 +33,7 @@ static const char *TAG = "vik_foc_example_main";
 
 
 
-extern void motor_encoder_init(void);
+
 void motor_get_current_main(void);
 
 
@@ -70,6 +70,6 @@ void app_main(void)
     /*
      * 7. 启动 GPTimer 周期控制。
      */
-    m0_fd6287_foc_start();
+    motor_set_pwm_init();
 
 }

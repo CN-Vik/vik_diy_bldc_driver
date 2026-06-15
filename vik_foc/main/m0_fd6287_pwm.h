@@ -5,6 +5,6 @@
 
 esp_err_t m0_fd6287_mcpwm_init(void);
 esp_err_t m0_fd6287_set_duty(float duty_u, float duty_v, float duty_w);
-esp_err_t m0_fd6287_foc_start(void);
+esp_err_t motor_set_pwm_init(void);
 
 #endif

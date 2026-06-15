@@ -61,22 +61,21 @@ typedef struct
     float integral_limit;
 } vfoc_position_pid_ctrl_t;
 
-
-void vfoc_position_ctrl_init(vfoc_position_pid_ctrl_t *ctrl,
-                             float kp,
-                             float ki,
-                             float kd,
-                             float torque_limit_v);
-
-void vfoc_position_set_target(vfoc_position_pid_ctrl_t *ctrl,
-                              float target_angle_deg);
-
-void vfoc_position_set_torque_limit(vfoc_position_pid_ctrl_t *ctrl,
-                                    float torque_limit_v);
-
-float vfoc_position_ctrl_calc(vfoc_position_pid_ctrl_t *ctrl,
-                              float current_angle_deg,
-                              float dt_s);
+float vfoc_pid_calt_curent_iq(  float kp,
+                                float ki,
+                                float ki_out_min,
+                                float ki_out_max,
+                                float kd,
+                                float exp_v,
+                                float now_v);
+                                
+float vfoc_pid_calt_curent_id(  float kp,
+                                float ki,
+                                float ki_out_min,
+                                float ki_out_max,
+                                float kd,
+                                float exp_v,
+                                float now_v);
 
 
 
