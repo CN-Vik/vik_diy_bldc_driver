@@ -42,8 +42,16 @@ KV值： 110KV
 foc_data_t vfoc_dt={0};
 
 
+/*-------------------低通滤波---------------------------*/
+void lp_filter_init(lp_filter_t *f, float alpha)
+{
+    f->alpha = alpha;
+    f->output = 0.0f;
+    f->init = 1;
+}
+
 /**
- * @brief 一阶低通滤波函数
+ * @brief  一阶低通滤波函数
  * 
  * @param input 当前输入值
  * @param alpha 滤波系数，范围 0.0f ~ 1.0f
@@ -55,58 +63,37 @@ alpha = 0.10f;   // 比较常用，适合电流/速度滤波
 alpha = 0.20f;   // 响应更快，滤波弱一点
 alpha = 0.50f;   // 响应很快，滤波比较弱
  * 
-
 角度值	0.05 ~ 0.15	角度不要滤太狠，否则位置环会变迟钝
 速度 RPM	0.10 ~ 0.30	速度计算本身抖动大，可以适当滤强一点
 电流值	0.05 ~ 0.20	只做显示/保护可以小一点；做电流环不能太小
 力矩值	0.10 ~ 0.30	如果力矩来自 Iq，基本跟电流滤波一致
 PID 的 D 项	0.05 ~ 0.15	D 项最容易放大噪声，建议滤强一点
  * 
+ * 
+ * 一阶低通滤波公式：
+ * output = last_output + alpha * (input - last_output)
+ * 
+ * @param f 
+ * @param input 
  * @return float 滤波后的输出值
  */
-float low_pass_filter(float input, float alpha)
+float lp_filter_update(lp_filter_t *f, float input)
 {
-    static float last_output = 0.0f;    /* 上一次滤波输出值 */
-    static bool first_flag = true;      /* 第一次进入标志 */
-
-    float output = 0.0f;
-
-    /*
-     * 限制alpha范围，防止参数乱传
-     */
-    if (alpha < 0.0f)
+    if (f->init)
     {
-        alpha = 0.0f;
-    }
-    else if (alpha > 1.0f)
-    {
-        alpha = 1.0f;
-    }
-
-    /*
-     * 第一次进入时，直接让输出等于输入
-     * 防止一开始从0慢慢爬上去
-     */
-    if (first_flag)
-    {
-        first_flag = false;
-        last_output = input;
+        f->init = 0;
+        f->output = input;
         return input;
     }
 
-    /*
-     * 一阶低通滤波公式：
-     * output = last_output + alpha * (input - last_output)
-     */
-    output = last_output + alpha * (input - last_output);
-
-    /*
-     * 保存本次输出，供下次使用
-     */
-    last_output = output;
-
-    return output;
+    f->output = f->output + f->alpha * (input - f->output);
+    return f->output;
 }
+
+
+/*-------------------低通滤波---------------------------*/
+
+
 
 
 
@@ -275,10 +262,15 @@ float get_vfoc_theta_e_rad(float m_angle)
         elec_deg += 360.0f;
     }
 
+    elec_deg = FOC_DEG_TO_RAD(elec_deg);
+
+    /*设置vik_foc的电角度值，弧度制*/
+    vfoc_dt.motor_par.theta_e = elec_deg;
+
     /*
      * 角度制 -> 弧度制
      */
-    return FOC_DEG_TO_RAD(elec_deg);
+    return elec_deg;
 
 }
 
@@ -561,7 +553,7 @@ static int vfoc_float_is_valid(float value)
  *      - 保留 duty 上下限，保护 bootstrap 驱动
  *      - 返回状态码，方便后续故障记录
  */
-vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
+vfoc_status_e_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
                                       float vbus,
                                       pwm_duty_t *duty_out)
 {
@@ -582,7 +574,7 @@ vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
 
     float duty_half_range;
 
-    vfoc_status_t status = VFOC_STATUS_OK;
+    vfoc_status_e_t status = VFOC_STATUS_OK;
 
     /*
      * 先给安全默认值。
@@ -761,7 +753,7 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
                               float dt_s)
 {
     clark_parm_t l_temp_clark_v = {0};
-    vfoc_status_t svpwm_status;
+    vfoc_status_e_t svpwm_status;
 
     if (dt_s <= 0.0f)
     {
@@ -852,7 +844,7 @@ void vfoc_set_svpwm(float uq,
 {
 
     clark_parm_t l_temp_clark_v = {0};
-    vfoc_status_t svpwm_status;
+    vfoc_status_e_t svpwm_status;
 
     /*
      * 2. 设置 dq 电压。
@@ -865,7 +857,7 @@ void vfoc_set_svpwm(float uq,
     vfoc_dt.park_val.Ud = ud;
 
     /*获取电角度弧度制*/
-    vfoc_dt.motor_par.theta_e = get_vfoc_theta_e_rad();
+    // vfoc_dt.motor_par.theta_e = get_vfoc_theta_e_rad();
 
     /*
      * 3. 逆 Park：
@@ -1059,7 +1051,7 @@ RPM_RAMP_PER_S * dt_s = 80.0f * 0.001f = 0.08rpm
  *
  * @return float    限速后的新值
  */
-static float ramp_float(float now, float target, float max_step)
+float ramp_float(float now, float target, float max_step)
 {
     /*
      * 计算目标值和当前值之间的差值。
@@ -1109,7 +1101,7 @@ static float ramp_float(float now, float target, float max_step)
     return now + diff;
 }
 
-static float limit_float(float x, float min, float max)
+float limit_float(float x, float min, float max)
 {
     if (x > max)
     {

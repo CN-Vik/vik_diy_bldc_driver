@@ -47,6 +47,9 @@ as5600_test_conf_readback();      // 测试配置寄存器读写
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "app_rtos_config.h"
+#include "vik_foc.h"
+
 
 
 static const char *TAG = "AS5600";
@@ -101,6 +104,7 @@ static as5600_handle_t as5600 = NULL;
  */
 static i2c_master_bus_handle_t bus_handle = NULL;
 
+int64_t angle_time_stamp; /*时间戳,单位:us*/
 
 
 
@@ -419,7 +423,7 @@ static int as5600_test_get_angle(void)
                  (float)degrees,
                  status_str);
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdTICKS_TO_MS(1));
     }
 
     return 0;
@@ -1339,45 +1343,63 @@ float get_motor_rpm_by_angle(float now_angle)
  * 
  * @param arg 
  */
-static void motor_encoder_angle_task(void *arg)
+static void motor_get_angle_task(void *arg)
 {
     float angle = 0.0f;
     float rpm = 0.0f;
 
     int log_cnt = 0;
+    int64_t angle_time_stamp_start = 0; /*时间戳,单位:us*/
+    int64_t angle_time_stamp_end = 0; /*时间戳,单位:us*/
 
     while (1)
     {
+        angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
         if (!motor_encoder_get_angle(&angle))
         {
             /*
              * 设置 VFOC 的机械角度
              */
             set_vfoc_theta_m_deg(angle);
-
             /*
              * 每次读取角度后都计算转速
              * 注意：不要放到 ESP_LOGI 里面算
              */
             set_vfoc_mech_rpm( get_motor_rpm_by_angle(angle) );
-            set_vfoc_mech_w( get_motor_omega_deg_s_by_angle(angle) );
+            angle_time_stamp = esp_timer_get_time();/*加入时间戳*/
+            // set_vfoc_mech_w( get_motor_omega_deg_s_by_angle(angle) );
+            
+            /*计算读取，计算一下角度速度值，耗时时间*/
+            angle_time_stamp_end = esp_timer_get_time();
+            
+            #if 0
+                /*
+                * 低频打印，比如 100 次打印一次
+                * 如果你的任务实际 10ms 一次，
+                * 那么 100 次就是大约 1 秒打印一次
+                */
+                if (++log_cnt >= 100)
+                {
+                    log_cnt = 0;
 
-            /*
-             * 低频打印，比如 100 次打印一次
-             * 如果你的任务实际 10ms 一次，
-             * 那么 100 次就是大约 1 秒打印一次
-             */
-            // if (++log_cnt >= 100)
-            // {
-            //     log_cnt = 0;
-
-            //     ESP_LOGI(TAG,
-            //         "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f",
-            //         angle,
-            //         get_vfoc_theta_m_deg(),
-            //         rpm
-            //     );
-            // }
+                    // ESP_LOGI(TAG,
+                    //     "motor_angle: %.2f, %.2f, %.2f, %lld, %lld\r\n",
+                    //     angle,
+                    //     get_vfoc_theta_m_deg(),
+                    //     get_vfoc_mech_rpm(),
+                    //     angle_time_stamp,
+                    //     (angle_time_stamp_end - angle_time_stamp_start)
+                    // );
+                    ESP_LOGI(TAG,
+                        "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f,t:%lldus,task_T:%lldus\r\n",
+                        angle,
+                        get_vfoc_theta_m_deg(),
+                        rpm,
+                        angle_time_stamp,
+                        (angle_time_stamp_end - angle_time_stamp_start)
+                    );
+                }
+            #endif
         }
         else
         {
@@ -1631,6 +1653,14 @@ uint8_t as5600_init(void)
     return 0;
 }
 
+
+
+int64_t get_motor_angle_time_stamp(void)
+{
+    return angle_time_stamp;
+}
+
+
 /**
  * @brief 电机编码器AS5600初始化
  *
@@ -1644,18 +1674,19 @@ void motor_encoder_init(void)
         ESP_LOGE(TAG, "as5600_init_failed!\r\n");
     }
 
+    // /*零角度位置初始化校准，不能每次上电后都运行这个*/
     // if (motor_encoder_zero_point_calib())
     // {
     //     ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
     // }
 
-    // xTaskCreatePinnedToCore(
-    //     motor_encoder_angle_task, // 任务函数
-    //     "encoder_angle_task",     // 任务名
-    //     4096 * 2,                 // 栈大小
-    //     NULL,                     // 参数
-    //     5,                        // 优先级
-    //     NULL,                     // 任务句柄
-    //     0                         // 跑在 core 0
-    // );
+    xTaskCreatePinnedToCore(
+        motor_get_angle_task, // 任务函数
+        "encoder_angle_task",     // 任务名
+        MOTOR_GET_ANGLE_TASK_STACK, // 栈大小
+        NULL,                     // 参数
+        MO_GET_ANGLE_TASK_PRIO,                        // 优先级
+        NULL,                     // 任务句柄
+        MOTOR_GET_ANGLE_TASK_CORE   // 跑在 core 1
+    );
 }

@@ -29,18 +29,17 @@
  * 各个任务的具体优先级
  */
 /* ADC读取任务优先级 */
-#define MOTOR_CURRENT_ADC_TASK_PRIO      20
-#define MO_SET_PWM_TASK_PRIO   8
+#define MOTOR_CURRENT_ADC_TASK_PRIO         22
+#define FOC_TASK_PRIO                       21
+#define MO_GET_ANGLE_TASK_PRIO              20
 
 
 /*
  * 任务栈大小，ESP-IDF 里单位是 byte，不是 word。
  */
-#define MOTOR_CURRENT_TASK_STACK   (8 * 1024)
-#define MOTOR_CONTROL_TASK_STACK   (8 * 1024)
-#define UART_PRINT_TASK_STACK      (4 * 1024)
-#define WIFI_TASK_STACK            (6 * 1024)
-#define MO_SET_PWM_TASK_STACK  (8 * 1024) /*8K Byte*/
+#define MOTOR_CURRENT_TASK_STACK        (8 * 1024)
+#define MOTOR_GET_ANGLE_TASK_STACK      (8 * 1024)
+#define FOC_TASK_STACK                  (8 * 1024) /*8K Byte*/
 
 
 
@@ -51,10 +50,9 @@
 #define APP_TASK_CORE_0            0
 #define APP_TASK_CORE_1            1
 
-#define MOTOR_CURRENT_TASK_CORE    APP_TASK_CORE_0
-#define MOTOR_CONTROL_TASK_CORE    APP_TASK_CORE_1
-#define UART_PRINT_TASK_CORE       APP_TASK_CORE_0
-#define MO_SET_PWM_TASK_CORE   APP_TASK_CORE_0
+#define FOC_TASK_RUN_CORE               APP_TASK_CORE_0 /*跨核传数据，延迟会大*/
+#define MOTOR_CURRENT_TASK_CORE         APP_TASK_CORE_1 /*目前基于ESP32的最优方案就是，两个线程单独去采样数据*/
+#define MOTOR_GET_ANGLE_TASK_CORE       APP_TASK_CORE_1
 
 
 #endif

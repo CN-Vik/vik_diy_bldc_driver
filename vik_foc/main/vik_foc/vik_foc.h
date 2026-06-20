@@ -76,8 +76,7 @@ do {                                            \
  */
 #define MOTOR0_FORWARD_IQ_DIR  (-1.0f)
 
-
-
+#define MOTOR_DRV_VBUS             12.0f  /* 12V */
 
 
 /**
@@ -176,7 +175,12 @@ typedef struct
     
 }foc_data_t;
 
-
+typedef struct
+{
+    float alpha;      // 滤波系数
+    float output;     // 上一次输出
+    uint8_t init;     // 初始化标志
+} lp_filter_t;
 
 
 
@@ -202,8 +206,44 @@ typedef enum
      */
     VFOC_STATUS_SATURATED,
 
-} vfoc_status_t;
+} vfoc_status_e_t;
 
+
+typedef struct 
+{
+    int64_t strat_t;/*开始时间戳*/
+    int64_t end_t;/*结束时间戳*/
+    int64_t dt;/*时间间隔*/
+}time_stamp_t;
+
+typedef struct 
+{
+    time_stamp_t time[10];
+    uint64_t index;/*索引号*/
+
+}vfoc_time_stamp_t;
+
+
+
+/*-------------------低通滤波---------------------------*/
+/**
+ * @brief use_example
+ * 
+lp_filter_t angle_f;
+
+lp_filter_init(&angle_f, 0.05f);
+
+theta = lp_filter_update(&angle_f, raw_angle);
+ *
+ * */
+void lp_filter_init(lp_filter_t *f, float alpha);
+float lp_filter_update(lp_filter_t *f, float input);
+
+
+/*-------------------低通滤波---------------------------*/
+
+float get_vfoc_mech_rpm(void);
+float limit_float(float x, float min, float max);
 float get_vfoc_theta_e_rad(float m_angle);
 float low_pass_filter(float input, float alpha);
 void vfoc_set_motor_drv_iq(float uq);
@@ -222,7 +262,7 @@ pwm_duty_t vfoc_get_pwm_duty(void);
  * 量产级 SVPWM 核心接口：
  * alpha/beta + vbus -> duty
  */
-vfoc_status_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
+vfoc_status_e_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
                                       float vbus,
                                       pwm_duty_t *duty_out);
 /*

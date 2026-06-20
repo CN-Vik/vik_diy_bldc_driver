@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include "esp_log.h"
+#include "esp_err.h"
 
 
 /*角度抖动误差*/
@@ -183,6 +184,10 @@ uint8_t as5600_init(void);
  * @return uint8_t 0:OK, other failed!
  */
 void motor_encoder_init(void);
+
+
+int64_t get_motor_angle_time_stamp(void);
+
 
 
 #endif

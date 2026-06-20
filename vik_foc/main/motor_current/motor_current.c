@@ -14,29 +14,22 @@
  * @copyright Copyright (c) 2026
  * 
  */
-#include "motor_current.h"
-#include <stdio.h>
 #include <string.h>
-#include <stdbool.h>
-#include <inttypes.h>
-#include <math.h>
-#include <float.h>
-
+#include <stdio.h>
 #include "sdkconfig.h"
 #include "esp_log.h"
-#include "esp_timer.h"
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
+#include "freertos/semphr.h"
 #include "esp_adc/adc_continuous.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
-#include "vik_foc.h"
-#include "app_rtos_resource.h"
-#include "motor_power.h"
+#include "esp_timer.h"
 #include "app_rtos_config.h"
-#include "motor_angle_acqu.h"
+#include "app_rtos_resource.h"
+#include "vik_foc.h"
+#include "motor_power.h"
+
 
 
 /*----------------------------------------------------------
@@ -60,7 +53,6 @@
 
 /*
  * ADC总采样率。
-    80KHZ
  *
  * ADC会依次轮询4个通道，因此：
  *
@@ -75,7 +67,7 @@
 #define CURRENT_ADC_STORE_BUFFER_SIZE 2048
 
 /* 每路零漂校准采样次数 */
-#define CURRENT_ZERO_SAMPLE_NUM 2000
+#define CURRENT_ZERO_SAMPLE_NUM 500
 
 /* 每隔100ms打印一次 */
 #define CURRENT_REPORT_PERIOD_US (1000 * 1000)
@@ -112,6 +104,25 @@ I = Vin/Rsen
  */
 #define INA240_MV_PER_AMP \
     (INA240_GAIN * CURRENT_SHUNT_RESISTOR_OHM * 1000.0f)
+
+/**
+ 10kHz
+alpha = 0.25f
+
+12kHz
+alpha = 0.28f
+
+15kHz
+alpha = 0.32f
+
+18kHz
+alpha = 0.35f
+
+20kHz
+alpha = 0.40f
+ * 
+ */
+#define CURRENT_FILTER_ALPHA 0.25f
 
 
 
@@ -154,9 +165,23 @@ typedef struct
 
 }adc_motor_current_t;
 
+
+typedef struct
+{
+    float ia;
+    float ib;
+    float ic;
+
+    uint32_t sample_index;
+
+    int64_t timestamp;
+
+}motor_current_frame_t;
+
 adc_motor_current_t adc_m0_val = {0};
 adc_motor_current_t adc_m1_val = {0};
 
+int64_t get_curent_time_stamp;
 
 
 /*
@@ -195,27 +220,28 @@ static bool current_adc_cali_enable = false;
 /* 日志TAG */
 static const char *TAG = "CURRENT_ADC";
 
- /**
-  * @brief 获取ADC通道对应的信号名称
-  * 
-  * @param channel 
-  * @return const char* 
-  */
-static const char *current_adc_get_name(adc_channel_t channel)
+
+/**
+ * @brief 获取ADC通道对应的信号名称
+ * 
+ * @param channel 
+ * @return const char* 
+ */
+static const char *get_adc_motor_ch_name(adc_channel_t channel)
 {
     switch (channel)
     {
         case MOTOR0_ADC_CH_IA:
-            return "M0_CS2";
+            return "M0_Ia";
 
         case MOTOR0_ADC_CH_IB:
-            return "M0_CS1";
+            return "M0_Ib";
 
         case MOTOR1_ADC_CH_IA:
-            return "M1_CS2";
+            return "M1_Ia";
 
         case MOTOR2_ADC_CH_IB:
-            return "M1_CS1";
+            return "M1_Ib";
 
         default:
             return "UNKNOWN";
@@ -310,7 +336,7 @@ static bool current_adc_calibration_init(void)
  * @return true 
  * @return false 
  */
-static bool IRAM_ATTR adc_crent_20KHZ_cb( adc_continuous_handle_t adc_handle,
+static bool IRAM_ATTR current_adc_conv_done_cb( adc_continuous_handle_t adc_handle,
                                                 const adc_continuous_evt_data_t *edata,
                                                 void *user_data)
 {
@@ -397,7 +423,7 @@ static void current_adc_continuous_init( adc_continuous_handle_t *out_handle )
         ESP_LOGI(
             TAG,
             "配置%s:ADC1_CH%d",
-            current_adc_get_name(current_adc_channels[i]),
+            get_adc_motor_ch_name(current_adc_channels[i]),
             current_adc_channels[i]
         );
     }
@@ -433,6 +459,76 @@ static bool current_adc_zero_calibration_finished(const uint32_t s_zero_count[ES
     return true;
 }
 
+
+
+/**
+ * @brief 一阶低通滤波器(IIR Low Pass Filter)
+ *
+ * 数学公式：
+ *      y(n) = y(n-1) + α * (x(n) - y(n-1))
+ *
+ * 等价于：
+ *      y = α*x + (1-α)*y_old
+ *
+ * 说明：
+ *      old    ：上一次滤波后的输出值
+ *      input  ：本次新的采样值
+ *      alpha  ：滤波系数(0~1)
+ *
+ * alpha越小：
+ *      - 滤波越强
+ *      - 输出更平滑
+ *      - 响应更慢
+ *
+ * alpha越大：
+ *      - 滤波越弱
+ *      - 响应更快
+ *      - 更接近原始采样值
+ *
+ * 特殊情况：
+ *      alpha = 1.0f
+ *          等于关闭滤波
+ *
+ *      alpha = 0.0f
+ *          输出永远保持旧值
+ *
+ * 本滤波器推荐用于：
+ *      - FOC相电流(Ia、Ib)
+ *      - 母线电流
+ *      - 母线电压
+ *      - 编码器速度
+ *
+ * 不建议用于：
+ *      - ADC Raw原始值
+ *
+ * @param old
+ *      上一次滤波后的输出值
+ *
+ * @param in
+ *      当前新的采样输入值
+ *
+ * @param alpha
+ *      一阶低通滤波系数
+ *      推荐：
+ *          10kHz采样：0.25
+ *          15kHz采样：0.32
+ *          20kHz采样：0.40
+ *
+ * @return
+ *      当前滤波后的输出值
+ */
+static inline float current_lpf(float in, float old)
+{
+    const float alpha = CURRENT_FILTER_ALPHA;/*0.2~0.4*/
+
+    return old + alpha * (in - old);
+}
+
+
+int64_t get_adc_motor_cuent_time_stamp(void)
+{
+    return get_curent_time_stamp;
+}
 
 
 /**
@@ -497,7 +593,7 @@ static void motor_current_adc_task(void *arg)
      * ADC转换完成后，中断回调会通知当前任务。
      */
     adc_continuous_evt_cbs_t callbacks = {
-        .on_conv_done = adc_crent_20KHZ_cb,
+        .on_conv_done = current_adc_conv_done_cb,
     };
 
     ESP_ERROR_CHECK(
@@ -516,13 +612,14 @@ static void motor_current_adc_task(void *arg)
     ESP_LOGW(TAG, "开始四路电流零漂校准");
     ESP_LOGW(TAG, "校准期间必须关闭电机PWM,保证相电流为0A");
 
-    float mech_angle = 0.0f;/*机械角度,角度值*/
-    float mech_rpm = 0.0f;/*机械转速*/
-    float mech_w = 0.0f;
-    float elec_angle_rad = 0.0f;/*电角度值：弧度制*/
+    float tmp_ia = 0;
+    float tmp_lpf_ia = 0;
+    float tmp_ib = 0;
+    float tmp_lpf_ib = 0;
 
-    clark_parm_t clark_temp={0};
-    park_parm_t park_temp={0};
+    int64_t curent_time_stamp_start = 0; /*时间戳,单位:us*/
+    int64_t curent_time_stamp_end = 0; /*时间戳,单位:us*/
+
 
     while (1)
     {
@@ -533,6 +630,8 @@ static void motor_current_adc_task(void *arg)
          * 不会一直占用CPU。
          */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        curent_time_stamp_start = esp_timer_get_time();
 
         /*
          * 一次通知到来后，尽量把ADC内部缓冲区的数据全部读完。
@@ -707,7 +806,7 @@ static void motor_current_adc_task(void *arg)
                     ESP_LOGI(
                         TAG,
                         "%s ,zero_vref:%dmv\r\n",
-                        current_adc_get_name(channel),
+                        get_adc_motor_ch_name(channel),
                         s_zero_voltage_mv[channel]
                     );
                 }
@@ -727,187 +826,46 @@ static void motor_current_adc_task(void *arg)
                 }
             }
         }
-
-        /*一阶低通滤波*/
-        adc_m0_val.mtor_ia_curent = low_pass_filter( 
-            adc_m0_val.mtor_ia_curent,
-            0.15f
-        );
-        adc_m0_val.mtor_ib_curent = low_pass_filter( 
-            adc_m0_val.mtor_ib_curent,
-            0.15f
-        );
-        adc_m0_val.mtor_ic_curent = -adc_m0_val.mtor_ia_curent-adc_m0_val.mtor_ib_curent;
-        /*1.以上是三相电流值获取完成*/
-
-        /*2. clark变换,输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
-        clark_temp = clark_tansform(
-            adc_m0_val.mtor_ia_curent,
-            adc_m0_val.mtor_ib_curent,
-            adc_m0_val.mtor_ic_curent
-        );
-
-        /*3. 获取机械角度*/
-        if (!motor_encoder_get_angle(&mech_angle))
-        {
-            /*
-             * 每次读取角度后都计算转速
-             * 注意：不要放到 ESP_LOGI 里面算
-             */
-            mech_rpm = low_pass_filter( 
-                get_motor_rpm_by_angle(mech_angle),
-                0.20f
-            );
-            mech_w = low_pass_filter( 
-                get_motor_omega_deg_s_by_angle(mech_angle),
-                0.20f
-            );
-
-            /*计算电角度*/
-            elec_angle_rad = get_vfoc_theta_e_rad(mech_angle);
-            
-        }
-        else
-        {
-            ESP_LOGE(TAG, "motor_encoder_get_angle_failed!");
-        }
-
-        /*4.park变换*/
-        park_temp = park_tansform(
-            clark_temp.I_alpha,
-            clark_temp.I_beta,
-            elec_angle_rad
-        );
-
         
-        /*当前电源每V电压支持0.071A， 0.071A/V，
-        12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
-        6.93*0.071A=0.49A
-        或者直接uq=6.93V,测试堵转电流值*/
-        float exp_iq = 0.40f;/*期望iq值*/
-        float now_iq = park_temp.Uq;/*当前实际的Uq值*/
-
-        float kp = 0.99f;
-        float ki = 0.0f;/*0.001f ~ 0.005f;*/
-        float kd = 0.0f;/*0.001f ~ 0.005f;*/
-
-        /**
-         * @brief FOC电流环_Iq_PI控制
-         * 
-         */
-        float pid_out_uq = vfoc_pid_calt_curent_iq(
-            kp,
-            ki,
-            -CURENT_I_OUT_LIMIT,
-            +CURENT_I_OUT_LIMIT,
-            kd,
-            exp_iq,/*expect:0.8A*/
-            now_iq
+        /*一阶低通滤波*/
+        tmp_lpf_ia = current_lpf(
+            adc_m0_val.mtor_ia_curent,
+            tmp_lpf_ia
         );
-
-
-        float exp_id = 0.0f;/*期望id值*/
-        float now_id = park_temp.Ud;/*当前实际的Uq值*/
-        kp = 0.3f;
-        ki = 0.01f;
-        kd = 0.0f;
-
-        /**
-         * @brief FOC电流环_Id_PI控制
-         * 
-         */
-        float pid_out_ud = vfoc_pid_calt_curent_id(
-            kp,
-            ki,
-            -CURENT_I_OUT_LIMIT,
-            +CURENT_I_OUT_LIMIT,
-            kd,
-            exp_id,/*expect:0.8A*/
-            now_id
+        
+        tmp_lpf_ib = current_lpf(
+            adc_m0_val.mtor_ib_curent,
+            tmp_lpf_ib
         );
+        
+        set_vfoc_ia_current(tmp_lpf_ia);
+        set_vfoc_ib_current(tmp_lpf_ib);
+        set_vfoc_ic_current(-tmp_lpf_ia - tmp_lpf_ib);
 
-        /*输出uq限幅*/
-        pid_out_uq = limit_float(pid_out_uq, -UQ_LIMIT, +UQ_LIMIT);
-        // float uq_cmd = MOTOR0_FORWARD_IQ_DIR * pid_out_uq;
-        float uq_cmd = 6.5f;
-        float ud_cmd = 0.0f;
+        curent_time_stamp_end = esp_timer_get_time();
 
-        l_temp_park_v.Uq = uq_cmd;
-        // l_temp_park_v.Uq = pid_out_uq;
-        l_temp_park_v.Ud = ud_cmd;
+        get_curent_time_stamp = esp_timer_get_time();/*记录下获取电流数据的时间戳*/
 
-        /*
-            * 统计平均绝对值，避免只看某一个瞬时点。
-            * 因为 ia/ib/ic/iq 是交流量，单点日志可能刚好采到过零点。
-            */
-        static uint32_t log_cnt = 0;
-        static float sum_ia_sq = 0.0f;
-        static float sum_ib_sq = 0.0f;
-        static float sum_ic_sq = 0.0f;
-        float is_amp = sqrtf(park_temp.Ud * park_temp.Ud + park_temp.Uq * park_temp.Uq);
+        #if 0
+            static uint32_t log_cnt = 0;
+            if ( (log_cnt++)>100 )
+            {
+                log_cnt = 0;
 
-        // 每次电流环执行都累加平方和
-        sum_ia_sq += motor_ia * motor_ia;
-        sum_ib_sq += motor_ib * motor_ib;
-        sum_ic_sq += motor_ic * motor_ic;
-
-        if (log_cnt++ >= 100)
-        {
-            // 求平均后开根号，得到这段时间内的有效值
-            float ia_rms = sqrtf(sum_ia_sq / 100.0f);
-            float ib_rms = sqrtf(sum_ib_sq / 100.0f);
-            float ic_rms = sqrtf(sum_ic_sq / 100.0f);
-
-            ESP_LOGI(TAG, "I_rms: %.3f, %.3f, %.3f, %.3f, %.3f, %.3f\r\n",
-                    ia_rms, 
-                    ib_rms,
-                    ic_rms,
-                    fabsf(now_iq),
-                    fabsf(now_id),
-                    is_amp
-            );
-
-            // 清零累加器，准备下一轮统计
-            sum_ia_sq = 0.0f;
-            sum_ib_sq = 0.0f;
-            sum_ic_sq = 0.0f;
-
-            // ESP_LOGI(
-            //     TAG,
-            //     "uq: %.2f, %.2f, %.2f, %.2f, %.2f,%.2f,%.2f \r\n",
-            //     exp_iq,
-            //     now_iq,
-
-            //     exp_id,
-            //     now_id,
-
-            //     motor_ia,
-            //     motor_ib,
-            //     motor_ic
-            // );
-
-            log_cnt = 0;
-        }
-    
-
-
-
-
-        //     /*
-        //      * 定期检查任务剩余栈。
-        //      */
-        //     ESP_LOGD(
-        //         TAG,
-        //         "电流任务剩余栈：%u字节",
-        //         (unsigned int)
-        //         uxTaskGetStackHighWaterMark(NULL)
-        //     );
-        // }
+                ESP_LOGI(
+                    TAG, 
+                    "get_motor_curent,ia:%.2f,ib:%.2f,ic:%.2f,t:%lldus,dt:%lld\r\n",
+                    tmp_lpf_ia,
+                    tmp_lpf_ib,
+                    -tmp_lpf_ia - tmp_lpf_ib,
+                    get_curent_time_stamp,
+                    (curent_time_stamp_end -curent_time_stamp_start)
+                );
+                
+            }
+        #endif
     }
 
-
-
-#if 0
     ESP_LOGE(TAG,
             "motor_current_adc_task_error! \r\n"
     );
@@ -925,7 +883,6 @@ static void motor_current_adc_task(void *arg)
     motor_current_adc_task_handle = NULL;
 
     vTaskDelete(NULL);
-#endif
 }
 
 /**
@@ -982,7 +939,7 @@ void motor_get_current_main(void)
 
     /*
      * app_main执行结束没有问题。
-     *
+     * 
      * ESP-IDF的main_task会继续完成自己的退出处理，
      * 电流采样任务独立运行。
      */

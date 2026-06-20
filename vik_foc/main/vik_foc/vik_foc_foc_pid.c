@@ -11,6 +11,7 @@
 #include "vik_foc.h"
 #include <math.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "FOC_PID";
 
