@@ -132,13 +132,13 @@ alpha = 0.40f
 
 
 /*电机0的相电流采集的ADC通道*/
-#define MOTOR0_ADC_CH_IA        ADC_CHANNEL_0 /* GPIO36：M0_CS2 */
-#define MOTOR0_ADC_CH_IB        ADC_CHANNEL_3 /* GPIO39：M0_CS1 */
-#define MOTOR0_ADC_CH_IC        
+#define MOTOR0_ADC_CH_IA        ADC_CHANNEL_3 /* GPIO39：M0_CS1 */ 
+#define MOTOR0_ADC_CH_IB        ADC_CHANNEL_0 /* GPIO36：M0_CS2 */
+#define MOTOR0_ADC_CH_IC        4
 
-#define MOTOR1_ADC_CH_IA        ADC_CHANNEL_6 /* GPIO34：M1_CS2 */
-#define MOTOR2_ADC_CH_IB        ADC_CHANNEL_7 /* GPIO35：M1_CS1 */
-#define MOTOR3_ADC_CH_IC        
+#define MOTOR1_ADC_CH_IA        5
+#define MOTOR1_ADC_CH_IB        ADC_CHANNEL_6 /* GPIO34：M1_CS2 */
+#define MOTOR1_ADC_CH_IC        ADC_CHANNEL_7 /* GPIO35：M1_CS1 */
 
 /**
  * @brief 
@@ -202,10 +202,10 @@ static int s_zero_voltage_mv[ESP32_ADC1_CHANNEL_MAX];
  * 
  */
 static const adc_channel_t current_adc_channels[CURRENT_ADC_CHANNEL_NUM] = {
-    MOTOR0_ADC_CH_IA, /* GPIO36：M0_CS2 */
-    MOTOR0_ADC_CH_IB, /* GPIO39：M0_CS1 */
-    MOTOR1_ADC_CH_IA, /* GPIO34：M1_CS2 */
-    MOTOR2_ADC_CH_IB, /* GPIO35：M1_CS1 */
+    MOTOR0_ADC_CH_IA, /* GPIO39：M0_CS1 */
+    MOTOR0_ADC_CH_IB, /* GPIO36：M0_CS2 */
+    MOTOR1_ADC_CH_IB, /* GPIO34：M1_CS2 */
+    MOTOR1_ADC_CH_IC, /* GPIO35：M1_CS1 */
 };
 
 /* ADC中断通知的任务句柄 */
@@ -236,12 +236,17 @@ static const char *get_adc_motor_ch_name(adc_channel_t channel)
 
         case MOTOR0_ADC_CH_IB:
             return "M0_Ib";
+        case MOTOR0_ADC_CH_IC:
+            return "M0_Ic";
 
         case MOTOR1_ADC_CH_IA:
             return "M1_Ia";
 
-        case MOTOR2_ADC_CH_IB:
+        case MOTOR1_ADC_CH_IB:
             return "M1_Ib";
+
+        case MOTOR1_ADC_CH_IC:
+            return "M1_Ic";
 
         default:
             return "UNKNOWN";
@@ -745,10 +750,16 @@ static void motor_current_adc_task(void *arg)
                             adc_m1_val.ia_shunt_mv = motor_vin;
                             break;
                         }
-                        case MOTOR2_ADC_CH_IB:
+                        case MOTOR1_ADC_CH_IB:
                         {
                             adc_m1_val.mtor_ib_curent = current_a;
                             adc_m1_val.ib_shunt_mv = motor_vin;
+                            break;
+                        }
+                        case MOTOR1_ADC_CH_IC:
+                        {
+                            adc_m1_val.mtor_ic_curent = current_a;
+                            adc_m1_val.ic_shunt_mv = motor_vin;
                             break;
                         }
                         default:
@@ -793,9 +804,14 @@ static void motor_current_adc_task(void *arg)
                             adc_m1_val.mtor_zero_ua = s_zero_voltage_mv[channel];
                             break;
                         }
-                        case MOTOR2_ADC_CH_IB:
+                        case MOTOR1_ADC_CH_IB:
                         {
                             adc_m1_val.mtor_zero_ub = s_zero_voltage_mv[channel];
+                            break;
+                        }
+                        case MOTOR1_ADC_CH_IC:
+                        {
+                            adc_m1_val.mtor_zero_uc = s_zero_voltage_mv[channel];
                             break;
                         }
                         default:

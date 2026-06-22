@@ -154,14 +154,14 @@ static bool IRAM_ATTR mcpwm_timer_isr ( mcpwm_timer_handle_t timer,
 {
     BaseType_t hp = pdFALSE;
 
-    if (foc_task_handle)
-    {
+    // if (foc_task_handle)
+    // {
         vTaskNotifyGiveFromISR(
             foc_task_handle,
             &hp
         );
         pwm_time_stamp = esp_timer_get_time();
-    }
+    // }
 
     return hp == pdTRUE;
 }

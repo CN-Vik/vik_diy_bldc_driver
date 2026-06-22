@@ -1668,7 +1668,7 @@ int64_t get_motor_angle_time_stamp(void)
  */
 void motor_encoder_init(void)
 {
-    
+    float l_temp_angle = 0.0f;
     if (as5600_init())
     {
         ESP_LOGE(TAG, "as5600_init_failed!\r\n");
@@ -1681,6 +1681,10 @@ void motor_encoder_init(void)
             ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
         }
     #endif
+
+    motor_encoder_get_angle(&l_temp_angle);
+    ESP_LOGE(TAG, "motor_encoder_angle_deg:%.2f\r\n",l_temp_angle);
+
     xTaskCreatePinnedToCore(
         motor_get_angle_task, // 任务函数
         "encoder_angle_task",     // 任务名
