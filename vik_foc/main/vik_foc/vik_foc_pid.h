@@ -13,6 +13,11 @@
 
 #include "stdint.h"
 
+
+#define CURRENT_LOOP_FREQ   (20000.0f)  /*20KHZ*/
+#define CURRENT_LOOP_DT     (1.0f/CURRENT_LOOP_FREQ)
+
+
 /**
  * @brief FOC PID 控制器结构体
  */
@@ -22,61 +27,31 @@ typedef struct
     float ki;                 /* 积分系数 */
     float kd;                 /* 微分系数 */
 
-    float target;             /* 目标值 */
-    float feedback;           /* 反馈值 */
-    float error;              /* 当前误差 */
-    float last_error;         /* 上一次误差 */
+    float pid_dt;             /*pid控制周期，单位s*/
 
-    float integral;           /* 积分累计值 */
-    float derivative;         /* 微分项 */
+    float exp_v;             /* 目标值 */
+    float now_v;                /* 当前值 */
+    float err_v;              /* 当前误差 */
+    float last_err_v;         /* 上一次误差 */
 
-    float output;             /* PID 输出 */
+    float ki_sum_err;            /* 积分误差累计 */
+    float ki_integral_min;       /* 积分最小限幅 */
+    float ki_integral_max;       /* 积分最大限幅 */
 
-    float output_min;         /* 输出最小限幅 */
-    float output_max;         /* 输出最大限幅 */
+    float kd_parm;           /* 微分参数 */
 
-    float integral_min;       /* 积分最小限幅 */
-    float integral_max;       /* 积分最大限幅 */
+    float kp_out;
+    float ki_out;
+    float kd_out;
+    float pid_out;             /* PID 输出 */
+
+    float pid_out_min;         /* 输出最小限幅 */
+    float pid_out_max;         /* 输出最大限幅 */
+
 } vfoc_pid_t;
 
 
-typedef struct
-{
-    float kp;
-    float ki;
-    float kd;
-
-    float target_angle_deg;      /* 目标机械角度，单位：度 */
-    float current_angle_deg;     /* 当前机械角度，单位：度 */
-
-    float error_deg;
-    float last_error_deg;
-
-    float integral;
-    float derivative;
-
-    float uq;                    /* 位置环输出的 Uq 电压 */
-    float torque_limit_v;        /* 力矩限制，本质是 Uq 限幅 */
-
-    float integral_limit;
-} vfoc_position_pid_ctrl_t;
-
-float vfoc_pid_calt_curent_iq(  float kp,
-                                float ki,
-                                float ki_out_min,
-                                float ki_out_max,
-                                float kd,
-                                float exp_v,
-                                float now_v);
-                                
-float vfoc_pid_calt_curent_id(  float kp,
-                                float ki,
-                                float ki_out_min,
-                                float ki_out_max,
-                                float kd,
-                                float exp_v,
-                                float now_v);
-
+void vfoc_pid_calt(vfoc_pid_t *pid);
 
 
 #endif

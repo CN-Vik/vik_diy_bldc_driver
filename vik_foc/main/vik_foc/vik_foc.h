@@ -12,6 +12,7 @@
 #define VIK_FOC_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 
 /*更号3*/
@@ -54,9 +55,8 @@ do {                                            \
 
 
 
-
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
-#define UQ_LIMIT            3.2f      // 初期限制 ±1.2V
+#define UQ_LIMIT            3.5f      // uq = 3.5, iq_max=0.30A
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
 
@@ -145,6 +145,9 @@ typedef struct
     unsigned int pole_pairs;/*电机磁极对数*/
     float theta_m;/*电机的机械角度：电机转子实际转过的角度*/
 
+    float theta_e_offset_mech;/*零电角度时候的机械角度偏移值，每次重启都会一直变化*/
+    float zero_theta_e_calib_flag;/*零电角度校准标志*/
+
     float ia;/*电机a相电流*/
     float ib;
     float ic;
@@ -218,7 +221,7 @@ typedef struct
 
 typedef struct 
 {
-    time_stamp_t time[10];
+    time_stamp_t time[100];
     uint64_t index;/*索引号*/
 
 }vfoc_time_stamp_t;
@@ -241,7 +244,8 @@ float lp_filter_update(lp_filter_t *f, float input);
 
 
 /*-------------------低通滤波---------------------------*/
-
+bool get_zero_theta_e_calib_flag(void);
+void set_theta_e_offset_mech(float mech_offset);
 float get_vfoc_mech_rpm(void);
 float limit_float(float x, float min, float max);
 float get_vfoc_theta_e_rad(float m_angle);

@@ -231,7 +231,28 @@ float get_vfoc_theta_m_deg(void)
     return ((float) vfoc_dt.motor_par.theta_m );
 }
 
+/**
+ * @brief 零点角度校准标志
+ * 
+ * @return true 
+ * @return false 
+ */
+bool get_zero_theta_e_calib_flag(void)
+{
+    return ((bool) vfoc_dt.motor_par.zero_theta_e_calib_flag);
+}
 
+
+/**
+ * @brief 设置零电角度时候的机械角度偏移值
+ * 
+ * @param mech_offset 
+ */
+void set_theta_e_offset_mech(float mech_offset)
+{
+    vfoc_dt.motor_par.theta_e_offset_mech = mech_offset;
+    vfoc_dt.motor_par.zero_theta_e_calib_flag = true;
+}
 
 /**
  * @brief vfoc获取电角度(弧度制)
@@ -247,7 +268,8 @@ float get_vfoc_theta_e_rad(float m_angle)
      * 机械角度 -> 电角度
         电角度 = 机械角度 * 电机磁极对数
      */
-    elec_deg = m_angle * vfoc_dt.motor_par.pole_pairs;
+    // elec_deg = (m_angle - vfoc_dt.motor_par.theta_e_offset_mech) * vfoc_dt.motor_par.pole_pairs;
+    elec_deg = (m_angle - 0) * vfoc_dt.motor_par.pole_pairs;
 
     /*
      * 限制到 0~360 度
@@ -1175,19 +1197,6 @@ void vfoc_speed_loop(void)
 
 }
 
-
-/**
- * @brief 电流环
- * 
- * @return float PID算出的Uq值
- */
-park_parm_t vfoc_curent_loop(void)
-{
-    park_parm_t l_temp_park_v = {0};
-
-
-    return l_temp_park_v;
-}
 
 /**
  * @brief 力矩环

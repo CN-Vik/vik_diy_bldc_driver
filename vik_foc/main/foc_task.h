@@ -1,0 +1,12 @@
+#ifndef FOC_TASK_H
+#define FOC_TASK_H
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+// 头文件里声明全局变量，所有包含此头文件的文件都能访问同一个变量
+extern TaskHandle_t foc_task_handle;
+
+void foc_task_creat(void);
+
+#endif 

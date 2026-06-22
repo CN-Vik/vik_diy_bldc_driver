@@ -1674,12 +1674,13 @@ void motor_encoder_init(void)
         ESP_LOGE(TAG, "as5600_init_failed!\r\n");
     }
 
-    // /*零角度位置初始化校准，不能每次上电后都运行这个*/
-    // if (motor_encoder_zero_point_calib())
-    // {
-    //     ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
-    // }
-
+    #if 0
+        /*零角度位置初始化校准，不能每次上电后都运行这个*/
+        if (motor_encoder_zero_point_calib())
+        {
+            ESP_LOGE(TAG, "motor_encoder_zero_point_calib_failed!\r\n");
+        }
+    #endif
     xTaskCreatePinnedToCore(
         motor_get_angle_task, // 任务函数
         "encoder_angle_task",     // 任务名

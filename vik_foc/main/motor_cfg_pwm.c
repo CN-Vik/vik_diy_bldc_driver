@@ -25,6 +25,7 @@
 #include "app_rtos_resource.h"
 #include "motor_power.h"
 #include "app_rtos_config.h"
+#include "foc_task.h"
 
 
 static const char *TAG = "MOTOR_CFG_PWM";
@@ -120,7 +121,6 @@ static m0_mcpwm_t s_m0_pwm = {0};
 
 int64_t pwm_time_stamp = 0; /*PWM ISR 时间戳,单位:us*/
 
-extern TaskHandle_t foc_task_handle;
 
 
 
@@ -140,7 +140,7 @@ static float m0_limit_float(float value, float min, float max)
 }
 
 /**
- * @brief 10KHZ PWM分频
+ * @brief 20KHZ PWM分频
  * 
  * @param timer 
  * @param edata 
@@ -152,22 +152,18 @@ static bool IRAM_ATTR mcpwm_timer_isr ( mcpwm_timer_handle_t timer,
                                                const mcpwm_timer_event_data_t *edata,
                                                void *user_ctx)
 {
-    /*在此触发电流环，PWM10K-20KHZ，电流采样10KHZ*/
-    static uint8_t div = 0;
-    
     BaseType_t hp = pdFALSE;
 
-    pwm_time_stamp = esp_timer_get_time();/*角度值时间戳us*/
+    if (foc_task_handle)
+    {
+        vTaskNotifyGiveFromISR(
+            foc_task_handle,
+            &hp
+        );
+        pwm_time_stamp = esp_timer_get_time();
+    }
 
-    vTaskNotifyGiveFromISR(
-        foc_task_handle,
-        &hp
-    );
-
-    portYIELD_FROM_ISR(hp); // 必须加，否则高优先级任务不会立刻运行
-    
-
-    return pdTRUE;
+    return hp == pdTRUE;
 }
 
 
@@ -216,6 +212,7 @@ esp_err_t motor_set_pwm_duty(float duty_u, float duty_v, float duty_w)
 
 esp_err_t esp32_mcpwm_init(void)
 {
+    ESP_LOGI(TAG, "[motor_cfg_pwm.c] 地址=%p, 值=%p", &foc_task_handle, foc_task_handle);
     int i;
     const int pwm_gpio[3] = {
         M0_IN1_GPIO,

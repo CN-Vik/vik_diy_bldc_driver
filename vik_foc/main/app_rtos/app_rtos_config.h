@@ -39,7 +39,7 @@
  */
 #define MOTOR_CURRENT_TASK_STACK        (8 * 1024)
 #define MOTOR_GET_ANGLE_TASK_STACK      (8 * 1024)
-#define FOC_TASK_STACK                  (8 * 1024) /*8K Byte*/
+#define FOC_TASK_STACK                  (16 * 1024) /*8K Byte*/
 
 
 

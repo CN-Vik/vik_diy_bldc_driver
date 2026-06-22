@@ -26,11 +26,10 @@
 #include "vik_foc.h"
 #include "vik_foc_pid.h"
 #include "motor_angle_acqu.h"
+#include "foc_task.h"
 
 
 static const char *TAG = "vik_foc_example_main";
-
-extern void foc_task_creat(void);
 
 
 void app_main(void)
