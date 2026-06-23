@@ -56,7 +56,7 @@ do {                                            \
 
 
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
-#define UQ_LIMIT            3.5f      // uq = 3.5, iq_max=0.30A
+#define UQ_LIMIT            6.5f      // uq = 3.5, iq_max=0.30A
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
 

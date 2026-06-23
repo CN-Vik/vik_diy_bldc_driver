@@ -84,7 +84,10 @@ vfoc_time_stamp_t curent_loop_time_stamp={0};
 vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
 
-park_parm_t curent_loop_park = {0};
+park_parm_t curent_loop_park = {
+    .Uq =0.0f,
+    .Ud =0.0f
+};
 
 
 
@@ -194,7 +197,7 @@ void vfoc_curent_loop(void)
     /*当前电源每V电压支持0.071A， 0.071A/V，
     12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
-    curent_loop_iq_pid.exp_v = 0.15f;/*期望iq值*/
+    curent_loop_iq_pid.exp_v = 0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
     curent_loop_iq_pid.now_v = current_lpf(park_temp.Uq, curent_loop_iq_pid.now_v);
 
@@ -202,7 +205,7 @@ void vfoc_curent_loop(void)
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
 
     /*iq pid 参数,纯PI控制器，kd=0 */
-    curent_loop_iq_pid.kp = 10.0f;
+    curent_loop_iq_pid.kp = 20.0f;
     curent_loop_iq_pid.ki = 0.0f;/*  */
     curent_loop_iq_pid.kd = 0.0f;/*  */
 
@@ -241,10 +244,11 @@ void vfoc_curent_loop(void)
 /*---------------------FOC-id-PI-控制---------------------------*/
 
     #if 0
-        curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
-        curent_loop_park.Ud = curent_loop_id_pid.pid_out;
+        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
+        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out);
+        // curent_loop_park.Ud = curent_loop_id_pid.pid_out;
     #else
-        curent_loop_park.Uq = UQ_LIMIT;
+        // curent_loop_park.Uq = UQ_LIMIT;
         curent_loop_park.Ud = 0;
     #endif
 
@@ -283,15 +287,43 @@ void vfoc_curent_loop(void)
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>1000 ) 
         {
+            static bool uq_flag = false;
+
+            if ( curent_loop_park.Uq >= 6.5 )
+            {
+                uq_flag = true;/*减小*/
+            }
+
+            if ( uq_flag )
+            {
+                curent_loop_park.Uq -=0.1f;
+                if(curent_loop_park.Uq <= 0.1f)
+                {
+                    uq_flag =false;/*增加*/
+                }
+
+            }else{
+
+                curent_loop_park.Uq +=0.1f;
+            }
+
+      
+
             ESP_LOGI(
                 TAG,
-                "iq: %.2f,%.2f,%.2f, %.2f,%.2f \r\n",
+                "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f\r\n",
                 curent_loop_iq_pid.exp_v,//3
                 curent_loop_iq_pid.now_v,//0
                 curent_loop_park.Uq,//1  
 
-                get_vfoc_theta_m_deg(),
-                get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+                // get_vfoc_theta_m_deg(),
+                // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                
+                adc_m0_val.ia_shunt_mv,
+                adc_m0_val.ib_shunt_mv,
+                adc_m0_val.ic_shunt_mv
+
+                
                 // exp_id,
                 // now_id
             );
@@ -384,6 +416,16 @@ void vfoc_curent_loop(void)
 
 
 /**
+ * @brief 获取clark-park-位置/速度/电流环PID运算后的uq,ud值
+ * 
+ * @return park_parm_t 
+ */
+park_parm_t vfoc_get_uqd(void)
+{
+    return curent_loop_park;
+}
+
+/**
  * @brief 
  * 
  * @param arg 
@@ -418,8 +460,8 @@ static void foc_task(void *arg)
 
         /*设置Uq,Ud*/
         vfoc_set_svpwm(
-            curent_loop_park.Uq,
-            curent_loop_park.Ud,
+            vfoc_get_uqd().Uq,
+            vfoc_get_uqd().Ud,
             MOTOR_DRV_VBUS
         );
 
