@@ -56,12 +56,12 @@ do {                                            \
 
 
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
-#define UQ_LIMIT            3.5f      // uq = 3.5, iq_max=0.30A
+#define UQ_LIMIT            6.5f      // uq = 3.5, iq_max=0.30A ,iq/uq=0.086A/uq
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
 
 #define SPEED_I_OUT_LIMIT   1.5f
-#define CURENT_I_OUT_LIMIT  0.3f
+#define CURENT_I_OUT_LIMIT  (UQ_LIMIT*0.5f)
 // #define MOTOR0_UQ_DIR   (-1.0f)
 /*
  * Uq输出方向修正：
@@ -98,10 +98,13 @@ typedef struct
  */
 typedef struct
 {
-    /*park变换的关键值*/
+    /*逆park变换的关键值，输出的电压值*/
     float Ud;
     float Uq;
 
+    /*正park变换值，实际的电流值dq电流值*/
+    float id;
+    float iq;
 }park_parm_t;
 
 
@@ -124,12 +127,12 @@ typedef struct
     float Ub;
     float Uc;
 
-    float iq;
-    float id;
+   volatile float iq;
+   volatile float id;
 
     pwm_duty_t pwm_duty_val;
-    float mech_rpm;/*机械角度转速*/
-    float mech_w;/*机械角速度*/
+   volatile float mech_rpm;/*机械角度转速*/
+   volatile float mech_w;/*机械角速度*/
 
 }motor_driver_parm_t;
 
@@ -141,16 +144,16 @@ typedef struct
 typedef struct
 {
     /*弧度制*/
-    float theta_e;/*电角度:转子磁场 / d轴 相对于定子 α 轴的电角度*/
-    unsigned int pole_pairs;/*电机磁极对数*/
-    float theta_m;/*电机的机械角度：电机转子实际转过的角度*/
+   volatile float theta_e;/*电角度:转子磁场 / d轴 相对于定子 α 轴的电角度*/
+   volatile unsigned int pole_pairs;/*电机磁极对数*/
+   volatile float theta_m;/*电机的机械角度：电机转子实际转过的角度*/
 
-    float theta_e_offset_mech;/*零电角度时候的机械角度偏移值，每次重启都会一直变化*/
-    float zero_theta_e_calib_flag;/*零电角度校准标志*/
+   volatile float theta_e_offset_mech;/*零电角度时候的机械角度偏移值，每次重启都会一直变化*/
+   volatile float zero_theta_e_calib_flag;/*零电角度校准标志*/
 
-    float ia;/*电机a相电流*/
-    float ib;
-    float ic;
+   volatile float ia;/*电机a相电流*/
+   volatile float ib;
+   volatile float ic;
 
 }motor_parm_t;
 
@@ -245,9 +248,12 @@ float lp_filter_update(lp_filter_t *f, float input);
 
 /*-------------------低通滤波---------------------------*/
 bool get_zero_theta_e_calib_flag(void);
+void set_zero_theta_e_calib_flag(bool flag);
 void set_theta_e_offset_mech(float mech_offset);
+float get_theta_e_offset_mech(void);
 float get_vfoc_mech_rpm(void);
 float limit_float(float x, float min, float max);
+void set_vfoc_theta_e_rad(float e_value);
 float get_vfoc_theta_e_rad(float m_angle);
 float low_pass_filter(float input, float alpha);
 void vfoc_set_motor_drv_iq(float uq);
@@ -261,6 +267,9 @@ clark_parm_t park_inv_transform(const foc_data_t *foc_v);
 pwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus);
 void vfoc_open_loop_spwm_run(float target_rpm, float uq, float vbus, float dt_s);
 pwm_duty_t vfoc_get_pwm_duty(void);
+void vfoc_set_spwm( float uq,
+                    float ud,
+                    float vbus);
 
 /*
  * 量产级 SVPWM 核心接口：

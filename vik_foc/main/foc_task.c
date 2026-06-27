@@ -84,7 +84,12 @@ vfoc_time_stamp_t curent_loop_time_stamp={0};
 vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
 
-park_parm_t curent_loop_park = {0};
+park_parm_t curent_loop_park = {
+    .Uq =0.0f,
+    .Ud =0.0f,
+    .id=0.0f,
+    .iq=0.0f
+};
 
 
 
@@ -168,7 +173,7 @@ void vfoc_curent_loop(void)
     static uint16_t t_index = 0;
 
     curent_loop_time_stamp.time[t_index].strat_t = esp_timer_get_time();/*角度值时间戳us*/
-    
+
     /* clark变换,
     输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
     clark_temp = clark_tansform(
@@ -185,7 +190,7 @@ void vfoc_curent_loop(void)
     park_temp = park_tansform(
         clark_temp.I_alpha,
         clark_temp.I_beta,
-        get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())/*和克拉克，帕克变换的方向反了*/
+        get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
         // 0.0f
     );
 
@@ -194,7 +199,7 @@ void vfoc_curent_loop(void)
     /*当前电源每V电压支持0.071A， 0.071A/V，
     12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
-    curent_loop_iq_pid.exp_v = 0.15f;/*期望iq值*/
+    curent_loop_iq_pid.exp_v = 0.20f;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
     curent_loop_iq_pid.now_v = current_lpf(park_temp.Uq, curent_loop_iq_pid.now_v);
 
@@ -202,18 +207,20 @@ void vfoc_curent_loop(void)
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
 
     /*iq pid 参数,纯PI控制器，kd=0 */
-    curent_loop_iq_pid.kp = 10.0f;
-    curent_loop_iq_pid.ki = 0.0f;/*  */
+    curent_loop_iq_pid.kp = 50.0f;
+    curent_loop_iq_pid.ki = 0.8f;//100.5f;/*  */
     curent_loop_iq_pid.kd = 0.0f;/*  */
 
     curent_loop_iq_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
     curent_loop_iq_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
 
+    /*PID输出结果限幅*/
+    curent_loop_iq_pid.pid_out_max = +UQ_LIMIT;
+    curent_loop_iq_pid.pid_out_min = -UQ_LIMIT;
+
     /* FOC电流环_Iq_PI控制 */
     vfoc_pid_calt(&curent_loop_iq_pid);
 
-    /*输出uq限幅*/
-    curent_loop_iq_pid.pid_out = limit_float(curent_loop_iq_pid.pid_out, -UQ_LIMIT, +UQ_LIMIT);
 /*---------------------FOC-iq-PI-控制---------------------------*/
 
 
@@ -228,44 +235,36 @@ void vfoc_curent_loop(void)
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
 
     /*id pid 参数,纯PI控制器，kd=0 */
-    curent_loop_id_pid.kp = 10.0f;
-    curent_loop_id_pid.ki = 0.0f;/*  */
+    curent_loop_id_pid.kp = 50.0f;
+    curent_loop_id_pid.ki = 0.9f;/*  */
     curent_loop_id_pid.kd = 0.0f;/*  */
 
     curent_loop_id_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
     curent_loop_id_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
+    
+    curent_loop_id_pid.pid_out_max = +UQ_LIMIT;
+    curent_loop_id_pid.pid_out_min = -UQ_LIMIT;
 
     /* FOC电流环_Id_PI控制 */
     vfoc_pid_calt(&curent_loop_id_pid);
-
 /*---------------------FOC-id-PI-控制---------------------------*/
 
-    #if 0
+    #if 1
+        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
         curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
-        curent_loop_park.Ud = curent_loop_id_pid.pid_out;
+        // curent_loop_park.Uq = 0.0f;
+        // curent_loop_park.Ud = curent_loop_id_pid.pid_out;
+        curent_loop_park.Ud = 0.0f;
     #else
-        curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Ud = 0;
+            curent_loop_park.Uq = UQ_LIMIT;
+            // curent_loop_park.Uq = 0.0f;
+            // curent_loop_park.Ud = 3.5f;
+            curent_loop_park.Ud = 0.0f;
     #endif
-
-    // if(!get_zero_theta_e_calib_flag()&&(t_index<40))
-    // {
-    //     curent_loop_park.Uq = 0;//UQ_LIMIT;
-    //     curent_loop_park.Ud = UQ_LIMIT;
-    //     static float mech_theta_sum = 0;
-    //     mech_theta_sum += get_vfoc_theta_m_deg();
-    //     if (t_index==39)
-    //     {
-    //         set_theta_e_offset_mech(mech_theta_sum/40);
-    //         ESP_LOGI(
-    //             TAG,
-    //             "zero_theta_e_calib_ok!:mech_theta(deg):%.2f,elce_theta(rad/s):%.2f \r\n",
-    //             get_vfoc_theta_m_deg(),
-    //             get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
-    //         );
-    //     }
-        
-    // }
+    
+    /*更新误差值*/
+    curent_loop_iq_pid.last_err_v = curent_loop_iq_pid.err_v;
+    curent_loop_id_pid.last_err_v = curent_loop_id_pid.err_v;
 
     curent_loop_time_stamp.time[t_index].end_t = esp_timer_get_time();/*角度值时间戳us*/
 
@@ -275,9 +274,6 @@ void vfoc_curent_loop(void)
     ++t_index;
     t_index%=10;
 
-    /*更新误差值*/
-    curent_loop_iq_pid.last_err_v = curent_loop_iq_pid.err_v;
-    curent_loop_id_pid.last_err_v = curent_loop_id_pid.err_v;
 
     #if 1
         // if ( (t_index==6) && ((log_cnt++)>1000) )
@@ -285,15 +281,19 @@ void vfoc_curent_loop(void)
         {
             ESP_LOGI(
                 TAG,
-                "iq: %.2f,%.2f,%.2f, %.2f,%.2f \r\n",
-                curent_loop_iq_pid.exp_v,//3
-                curent_loop_iq_pid.now_v,//0
-                curent_loop_park.Uq,//1  
+                "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f\r\n",
+                curent_loop_iq_pid.exp_v,//0
+                curent_loop_iq_pid.now_v,//1
+                // park_temp.Uq,
+                curent_loop_park.Uq,//2  
 
-                get_vfoc_theta_m_deg(),
-                get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
-                // exp_id,
-                // now_id
+                // get_vfoc_theta_m_deg(),
+                // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                
+                curent_loop_id_pid.exp_v,//3
+                // park_temp.Ud,
+                curent_loop_id_pid.now_v, //4
+                curent_loop_park.Ud
             );
 
             // ESP_LOGI(
@@ -384,6 +384,16 @@ void vfoc_curent_loop(void)
 
 
 /**
+ * @brief 获取clark-park-位置/速度/电流环PID运算后的uq,ud值
+ * 
+ * @return park_parm_t 
+ */
+park_parm_t vfoc_get_uqd(void)
+{
+    return curent_loop_park;
+}
+
+/**
  * @brief 
  * 
  * @param arg 
@@ -397,6 +407,9 @@ static void foc_task(void *arg)
     int64_t pwm_isr_t_stamp = 0;/*PWM ISR产生时间戳*/
 
     uint16_t t_index = 0;
+
+    uint32_t zero_e_cnt = 0;
+    float zero_e_mech_sum = 0.0f;
 
     while (1)
     {
@@ -414,14 +427,53 @@ static void foc_task(void *arg)
         angle_t_stamp = get_motor_angle_time_stamp();/*获取角度值数据的时间戳*/
         pwm_isr_t_stamp = get_motor_pwm_isr_time_stamp();
 
-        vfoc_curent_loop();
+        if ( get_zero_theta_e_calib_flag() )
+        {/*已经进行了电角度零点对齐*/
 
-        /*设置Uq,Ud*/
-        vfoc_set_svpwm(
-            curent_loop_park.Uq,
-            curent_loop_park.Ud,
-            MOTOR_DRV_VBUS
-        );
+            vfoc_curent_loop();
+        
+        }else{/*未进行电角度零点对齐*/
+
+            curent_loop_park.Uq = 0.0f;
+            curent_loop_park.Ud = 4.5f;
+
+            ++zero_e_cnt;
+            zero_e_mech_sum += get_vfoc_theta_m_deg();
+            if ( zero_e_cnt >=(20*3000) )/*50us一个周期，20次=1ms,需要100ms*/
+            {
+                // 显式强清零，确保 SVPWM 此时注入的电压向量在绝对的物理 0 度
+                set_vfoc_theta_e_rad(0.0f);
+                /*设置零电角度时候的，机械角度偏移值*/
+                set_theta_e_offset_mech( zero_e_mech_sum / zero_e_cnt );
+                set_zero_theta_e_calib_flag(true);
+                zero_e_cnt = 0;
+
+                ESP_LOGI(
+                    TAG,
+                    "zero_e_mech:%.2f,theta_e(rad/s):%.2f \r\n",
+                    get_theta_e_offset_mech(),
+                    get_vfoc_theta_e_rad(get_theta_e_offset_mech())
+                );
+
+            }
+            
+        }
+        
+        #ifdef USE_FOC_SPWM
+            /*设置Uq,Ud*/
+            vfoc_set_spwm(
+                vfoc_get_uqd().Uq,
+                vfoc_get_uqd().Ud,
+                MOTOR_DRV_VBUS
+            );
+        #elif defined(USE_FOC_SVPWM)
+            /*设置Uq,Ud*/
+            vfoc_set_svpwm(
+                vfoc_get_uqd().Uq,
+                vfoc_get_uqd().Ud,
+                MOTOR_DRV_VBUS
+            );
+        #endif
 
         motor_set_pwm_duty(
             vfoc_get_pwm_duty().duty_Ua,
@@ -555,6 +607,9 @@ void foc_task_creat(void)
 
     /*初始化 MOS enable GPIO,默认必须关闭 MOS*/
     motor_power_init();
+
+    /*上电默认设置零电角度未对齐*/
+    set_zero_theta_e_calib_flag(false);
 
     /*电机编码器初始化获取机械角度,以及初始化零角度的位置*/
     motor_encoder_init();

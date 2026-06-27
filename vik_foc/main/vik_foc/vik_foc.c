@@ -244,6 +244,17 @@ bool get_zero_theta_e_calib_flag(void)
 
 
 /**
+ * @brief 设置电角度零点对其标志(后续写入flah中)
+ * 
+ * @param flag true or false
+ */
+void set_zero_theta_e_calib_flag(bool flag)
+{
+    vfoc_dt.motor_par.zero_theta_e_calib_flag = flag;
+}
+
+
+/**
  * @brief 设置零电角度时候的机械角度偏移值
  * 
  * @param mech_offset 
@@ -251,7 +262,21 @@ bool get_zero_theta_e_calib_flag(void)
 void set_theta_e_offset_mech(float mech_offset)
 {
     vfoc_dt.motor_par.theta_e_offset_mech = mech_offset;
-    vfoc_dt.motor_par.zero_theta_e_calib_flag = true;
+}
+
+float get_theta_e_offset_mech(void)
+{
+    return vfoc_dt.motor_par.theta_e_offset_mech;
+}
+
+/**
+ * @brief 设置电角度的值
+ * 
+ * @param e_value 
+ */
+void set_vfoc_theta_e_rad(float e_value)
+{
+    vfoc_dt.motor_par.theta_e = e_value;
 }
 
 /**
@@ -269,7 +294,7 @@ float get_vfoc_theta_e_rad(float m_angle)
         电角度 = 机械角度 * 电机磁极对数
      */
     // elec_deg = (m_angle - vfoc_dt.motor_par.theta_e_offset_mech) * vfoc_dt.motor_par.pole_pairs;
-    elec_deg = (m_angle - 0) * vfoc_dt.motor_par.pole_pairs;
+    elec_deg = (m_angle - vfoc_dt.motor_par.theta_e_offset_mech) * vfoc_dt.motor_par.pole_pairs;
 
     /*
      * 限制到 0~360 度
@@ -287,7 +312,8 @@ float get_vfoc_theta_e_rad(float m_angle)
     elec_deg = FOC_DEG_TO_RAD(elec_deg);
 
     /*设置vik_foc的电角度值，弧度制*/
-    vfoc_dt.motor_par.theta_e = elec_deg;
+    set_vfoc_theta_e_rad(elec_deg);
+    // vfoc_dt.motor_par.theta_e = elec_deg;
 
     /*
      * 角度制 -> 弧度制
@@ -717,18 +743,23 @@ vfoc_status_e_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
     ub += zero_offset;
     uc += zero_offset;
 
-    /*
-    * 这里打印的是 SVPWM 注入零序之后的三相电压。
-    * 注意：这个 sum 不一定等于 0。
-    */
-    // ESP_LOGI(TAG,"SVPWM UVW: %.3f,%.3f,%.3f,%.3f,%.3f \r\n",
-    //         ua,
-    //         ub,
-    //         uc,
-    //         zero_offset,
-    //         ua + ub + uc
-    // );
+    // static uint32_t log_cnt = 0;
+    // if ( (log_cnt++)>1000 ) 
+    // {
+    //     /*
+    //     * 这里打印的是 SVPWM 注入零序之后的三相电压。
+    //     * 注意：这个 sum 不一定等于 0。
+    //     */
+    //     ESP_LOGI(TAG,"SVPWM UVW: %.3f,%.3f,%.3f,%.3f,%.3f \r\n",
+    //             ua,
+    //             ub,
+    //             uc,
+    //             zero_offset,
+    //             ua + ub + uc
+    //     );
 
+    //     log_cnt = 0;
+    // }
     /*
      * 电压 -> duty。
      *
@@ -950,6 +981,57 @@ pwm_duty_t vfoc_spwm_calc_duty(const motor_driver_parm_t *motor_v, float vbus)
     duty.duty_Uc = vfoc_limit(duty.duty_Uc, 0.0f, 1.0f);
 
     return duty;
+}
+
+
+
+void vfoc_set_spwm( float uq,
+                    float ud,
+                    float vbus)
+{
+    clark_parm_t l_temp_clark_v = {0};
+    
+    /*
+     * 2. 开环电压 FOC：d轴为0，q轴给电压
+    先设置 Ud/Uq 
+    如果你是 12V 电源，SPWM 下建议初期小一点：Uq = 0.5f ~ 2.0f;
+    
+    Uq 太大可能表现为：
+        电机啸叫
+        抖动
+        电流大
+        驱动芯片发热
+        电机发热
+     */
+    vfoc_dt.park_val.Uq = uq;
+    vfoc_dt.park_val.Ud = ud;
+
+    /*
+     * 3. Park逆变换：Id/Iq -> Ualpha/Ubeta
+     */
+    l_temp_clark_v = park_inv_transform(&vfoc_dt);
+
+    /*
+     * 4. Clarke逆变换：Ualpha/Ubeta -> Ua/Ub/Uc
+     */
+    vfoc_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
+
+    /*如果 sum 接近 0，说明逆 Clarke 输出也正常。*/
+    // ESP_LOGI(TAG, "UVW: %.3f, %.3f, %.3f, sum=%.3f",
+    //     vfoc_dt.motor_drv_val.Ua,
+    //     vfoc_dt.motor_drv_val.Ub,
+    //     vfoc_dt.motor_drv_val.Uc,
+    //     vfoc_dt.motor_drv_val.Ua +
+    //     vfoc_dt.motor_drv_val.Ub +
+    //     vfoc_dt.motor_drv_val.Uc
+    // );
+
+    /*
+     * 5. SPWM：Ua/Ub/Uc -> duty_Ua/duty_Ub/duty_Uc
+     */
+    vfoc_dt.motor_drv_val.pwm_duty_val =
+        vfoc_spwm_calc_duty(&vfoc_dt.motor_drv_val, vbus);
+
 }
 
 
