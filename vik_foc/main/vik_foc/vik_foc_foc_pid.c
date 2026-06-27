@@ -41,17 +41,41 @@ void vfoc_pid_calt(vfoc_pid_t *pid)
     /*比例部分: KP*当前误差值*/
     pid->kp_out = (pid->kp * pid->err_v);
 
-    /*积分部分*/
-    pid->ki_sum_err += (pid->err_v * pid->pid_dt);
+    /*积分部分：先累加误差 ,当超过当前值超过期望值，积分部分就起负反馈作用*/
+    pid->ki_integral += (pid->err_v * pid->pid_dt);
     /*积分限幅*/
-    pid->ki_sum_err = limit_float(pid->ki_sum_err, pid->ki_integral_min, pid->ki_integral_max);
-    pid->ki_out = (pid->ki * pid->ki_sum_err);
+    if (pid->ki_integral > pid->ki_integral_max)
+    {
+        pid->ki_integral = pid->ki_integral_max;
+    }
+    
+    if (pid->ki_integral < pid->ki_integral_min )
+    {
+        pid->ki_integral = pid->ki_integral_min;
+    }
+    
+    /* 计算积分输出 */
+    pid->ki_out = (pid->ki * pid->ki_integral);
+
 
     /*kd微分参数:本次误差值 - 上一次误差值*/
     pid->kd_parm = pid->err_v - pid->last_err_v;
     pid->kd_out = ( pid->kd * (pid->kd_parm / pid->pid_dt) );
 
+    /*pid计算输出*/
     pid->pid_out = pid->kp_out + pid->ki_out + pid->kd_out;
+
+    /*pid输出限幅*/
+    if (pid->pid_out > pid->pid_out_max)
+    {
+        pid->pid_out = pid->pid_out_max;
+    }
+
+    if (pid->pid_out < pid->pid_out_min)
+    {
+        pid->pid_out = pid->pid_out_min;
+    }
+    
 
 }
 

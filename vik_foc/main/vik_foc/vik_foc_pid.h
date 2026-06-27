@@ -15,7 +15,7 @@
 
 
 #define CURRENT_LOOP_FREQ   (20000.0f)  /*20KHZ*/
-#define CURRENT_LOOP_DT     (1.0f/CURRENT_LOOP_FREQ)
+#define CURRENT_LOOP_DT     (1.0f/CURRENT_LOOP_FREQ) /*50us = 0.00005s*/
 
 
 /**
@@ -34,7 +34,7 @@ typedef struct
     float err_v;              /* 当前误差 */
     float last_err_v;         /* 上一次误差 */
 
-    float ki_sum_err;            /* 积分误差累计 */
+    float ki_integral;            /* 积分误差累计 */
     float ki_integral_min;       /* 积分最小限幅 */
     float ki_integral_max;       /* 积分最大限幅 */
 
