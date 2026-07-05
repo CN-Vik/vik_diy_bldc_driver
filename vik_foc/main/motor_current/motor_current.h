@@ -13,50 +13,48 @@
 
 #include <string.h>
 #include <stdio.h>
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 
-/*----------------------------------------------------------
- * ADC基本配置
- *----------------------------------------------------------*/
+/* 每个电机3路电流采样 ,实际只做了两相*/
+/*目前两个电机四个通道*/
+#define CURRENT_SAMPLE_PHASE_NUM (3-1)
 
-/* 使用ADC1 */
-#define CURRENT_ADC_UNIT ADC_UNIT_1
+#define MOTOR_NUM   1
 
-/* ESP32只使用ADC1 */
-#define CURRENT_ADC_CONV_MODE ADC_CONV_SINGLE_UNIT_1
+#define CONFIG_IDF_TARGET_ESP32     1
 
-/* 使用较大衰减，允许测量接近3.3V的电压 */
-#define CURRENT_ADC_ATTEN ADC_ATTEN_DB_12
+// ADC1 Channels
+#if CONFIG_IDF_TARGET_ESP32
 
-/* 使用芯片支持的最大ADC位宽，ESP32通常为12位 */
-#define CURRENT_ADC_BIT_WIDTH SOC_ADC_DIGI_MAX_BITWIDTH
+#define MOTOR0_ADC_CH_IA ADC_CHANNEL_3 /* GPIO39：M0_CS1 */ 
+#define MOTOR0_ADC_CH_IB ADC_CHANNEL_0 /* GPIO36：M0_CS2 */
+#define MOTOR0_ADC_CH_IC ADC_CHANNEL_2 /*电机IC相不做电流采样随便写个通道*/
 
-/* 一共有4路电流采样 */
-#define CURRENT_ADC_CHANNEL_NUM 4
+#define MOTOR1_ADC_CH_IA ADC_CHANNEL_6
+#define MOTOR1_ADC_CH_IB ADC_CHANNEL_7
+#define MOTOR1_ADC_CH_IC ADC_CHANNEL_5
+#else
+#define MOTOR0_ADC_CH_IA ADC_CHANNEL_2
+#define MOTOR0_ADC_CH_IB ADC_CHANNEL_3
+#endif
 
-/*
- * ADC总采样率。
- *
- * ADC会依次轮询4个通道，因此：
- *
- * 80000次/秒 ÷ 4路 = 每路约20000次/秒
+#if (SOC_ADC_PERIPH_NUM >= 2) && !CONFIG_IDF_TARGET_ESP32C3
+/**
+ * On ESP32C3, ADC2 is no longer supported, due to its HW limitation.
+ * Search for errata on espressif website for more details.
  */
-#define CURRENT_ADC_TOTAL_SAMPLE_HZ (80 * 1000)
+#define EXAMPLE_USE_ADC2 0
+#endif
 
-/* 每次从DMA读取的字节数 */
-#define CURRENT_ADC_READ_LEN 256
 
-/* ADC驱动内部缓冲区大小 */
-#define CURRENT_ADC_STORE_BUFFER_SIZE 2048
 
-/* 每路零漂校准采样次数 */
-#define CURRENT_ZERO_SAMPLE_NUM 500
+#define EXAMPLE_ADC_ATTEN ADC_ATTEN_DB_12
 
-/* 每隔100ms打印一次 */
-#define CURRENT_REPORT_PERIOD_US (1000 * 1000)
-
-/* ESP32 ADC1总共有8个通道：0～7 */
-#define ESP32_ADC1_CHANNEL_MAX 8
+/* VREF采样次数 */
+#define CURRENT_VREF_SAMPLE_NUM (500)
 
 /*----------------------------------------------------------
  * INA240A2配置
@@ -73,8 +71,8 @@ I = Vin/Rsen
 /* INA240A2增益为50V/V */
 #define INA240_GAIN 50.0f
 
-/* 电流采样电阻为10mΩ,0.01欧姆 */
-#define CURRENT_SHUNT_RESISTOR_OHM 0.010f
+/* 电流采样电阻为10mΩ ,0.01欧姆,此单位是毫欧 */
+#define CURRENT_SHUNT_RESISTOR_OHM 10.0f
 
 /*
  * 输出灵敏度：
@@ -107,65 +105,67 @@ alpha = 0.40f
  */
 #define CURRENT_FILTER_ALPHA 0.25f
 
+//-------------ADC1 Init---------------//
+typedef enum
+{
+    MOTOR0_ADC_IA_CH = 0,
+    MOTOR0_ADC_IB_CH,
+    MOTOR0_ADC_IC_CH,
+
+    MOTOR1_ADC_IA_CH = 0,
+    MOTOR1_ADC_IB_CH,
+    MOTOR1_ADC_IC_CH,
+
+} motor_adc_ch_e_t;
+
+typedef enum
+{
+    MOTOR0 = 0,
+    MOTOR1,
+    MOTOR_NUM_MAX,
+} motor_num_e_t;
 
 
-/*----------------------------------------------------------
- * 电流采样任务配置
- *----------------------------------------------------------*/
-
-
-/*电机0的相电流采集的ADC通道*/
-#define MOTOR0_ADC_CH_IA        ADC_CHANNEL_3 /* GPIO39：M0_CS1 */ 
-#define MOTOR0_ADC_CH_IB        ADC_CHANNEL_0 /* GPIO36：M0_CS2 */
-#define MOTOR0_ADC_CH_IC        4
-
-#define MOTOR1_ADC_CH_IA        5
-#define MOTOR1_ADC_CH_IB        ADC_CHANNEL_6 /* GPIO34：M1_CS2 */
-#define MOTOR1_ADC_CH_IC        ADC_CHANNEL_7 /* GPIO35：M1_CS1 */
 
 /**
- * @brief 
- * 
-// ADC_CHANNEL_0, // GPIO36：M0_CS2 
-// ADC_CHANNEL_3, // GPIO39：M0_CS1
-// ADC_CHANNEL_6, // GPIO34：M1_CS2
-// ADC_CHANNEL_7, // GPIO35：M1_CS1
- * 
+ * @brief ADC数据结构体
+ *
  */
-typedef struct 
+typedef struct
 {
-    float mtor_ia_curent;/*换算后的电机相线的电流值,单位A*/
-    float mtor_ib_curent;
-    float mtor_ic_curent;
+    /*ADC 校准句柄，后续读取 ADC 原始值时传入，API 自动换算修正后的真实电压*/
+    /*motor0_ia && motor0_ib && motor0_ic*/
+    adc_cali_handle_t adc1_clib_motor_handle;
 
-    float mtor_zero_ua;/*电机静止时候零点的电压值Vref ,单位:mv*/
-    float mtor_zero_ub;/*电机静止时候零点的电压值Vref*/
-    float mtor_zero_uc;/*电机静止时候零点的电压值Vref*/
+    adc_channel_t adc_ch;
+    int adc_raw;
+    int volt_mv;  /*INA240A2Vout电压值,单位:mv*/
+    uint32_t vref_sum;/*INA240的参考电压值,累加值*/
+    uint32_t vref_cnt;/*INA240的参考电压值,累加次数*/
+    float vref;/*单位mv,INA240的参考电压值,求均值最稳妥*/
+    float vin_mv;/*电机相电压*/
 
-    float ia_shunt_mv;/*电机相线的电压值,单位:mv*/
-    float ib_shunt_mv;
-    float ic_shunt_mv;
+    int64_t adc_ch_t_stap; /*每相ADC电流采样时间戳,单位:us*/
 
-}adc_motor_current_t;
+} adc_data_t;
+
 
 
 typedef struct
 {
-    float ia;
-    float ib;
-    float ic;
+    adc_data_t chanel[3];/*每个电机三相信号*/
+    int64_t time_stamp; /*时间戳,单位:us*/
+    float ia_curent;
+    float ib_curent;
+    float ic_curent;
 
-    uint32_t sample_index;
-
-    int64_t timestamp;
-
-}motor_current_frame_t;
+} adc_motor_curent_t;
 
 
-extern adc_motor_current_t adc_m0_val;
+// void motor_get_current_main(void);
+void motor_get_curent_init(void);
+void motor_get_curent(void);
 
-extern void motor_get_current_main(void);
-int64_t get_adc_motor_cuent_time_stamp(void);
 
 
 #endif

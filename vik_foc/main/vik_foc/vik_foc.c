@@ -279,13 +279,19 @@ void set_vfoc_theta_e_rad(float e_value)
     vfoc_dt.motor_par.theta_e = e_value;
 }
 
+float get_vfoc_theta_e_rad(void)
+{
+    return vfoc_dt.motor_par.theta_e;
+}
+
+
 /**
  * @brief vfoc获取电角度(弧度制)
  * 
  * @param m_angle 机械角度(角度值)
  * @return float 电角度弧度制
  */
-float get_vfoc_theta_e_rad(float m_angle)
+float vfoc_calc_theta_e_rad(float m_angle)
 {
     float elec_deg;/*电角度*/
 
@@ -311,9 +317,9 @@ float get_vfoc_theta_e_rad(float m_angle)
 
     elec_deg = FOC_DEG_TO_RAD(elec_deg);
 
-    /*设置vik_foc的电角度值，弧度制*/
-    set_vfoc_theta_e_rad(elec_deg);
-    // vfoc_dt.motor_par.theta_e = elec_deg;
+    // /*设置vik_foc的电角度值，弧度制*/
+    // set_vfoc_theta_e_rad(elec_deg);
+    // // vfoc_dt.motor_par.theta_e = elec_deg;
 
     /*
      * 角度制 -> 弧度制
@@ -910,7 +916,7 @@ void vfoc_set_svpwm(float uq,
     vfoc_dt.park_val.Ud = ud;
 
     /*获取电角度弧度制*/
-    // vfoc_dt.motor_par.theta_e = get_vfoc_theta_e_rad();
+    // vfoc_dt.motor_par.theta_e = vfoc_calc_theta_e_rad();
 
     /*
      * 3. 逆 Park：

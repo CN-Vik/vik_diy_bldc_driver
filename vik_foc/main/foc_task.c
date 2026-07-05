@@ -79,7 +79,6 @@ const static char *TAG = "FOC_TASK";
 TaskHandle_t foc_task_handle = NULL;
 
 vfoc_time_stamp_t foc_time_stamp={0};
-vfoc_time_stamp_t curent_loop_time_stamp={0};
 
 vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
@@ -158,6 +157,16 @@ static inline float current_lpf(float in, float old)
     return old + alpha * (in - old);
 }
 
+/**
+ * @brief 获取clark-park-位置/速度/电流环PID运算后的uq,ud值
+ * 
+ * @return park_parm_t 
+ */
+park_parm_t vfoc_get_uqd(void)
+{
+    return curent_loop_park;
+}
+
 
 /**
  * @brief 电流环
@@ -169,10 +178,21 @@ void vfoc_curent_loop(void)
     park_parm_t park_temp={0};
 
     static uint32_t log_cnt = 0;
+    float mech_angle = 0.0f;
+    
+    int64_t t_0 = 0; /*时间戳,单位:us*/
+    int64_t t_1 = 0; /*时间戳,单位:us*/
+    
+    t_0 = esp_timer_get_time();/*角度值时间戳us*/
+    motor_encoder_get_angle(&mech_angle);
+    set_vfoc_theta_e_rad( vfoc_calc_theta_e_rad(mech_angle));/*设置电角度值*/
+    set_vfoc_mech_rpm( get_motor_rpm_by_angle(mech_angle) );/*每次读取角度后都计算转速*/
+    // t_1 = esp_timer_get_time();
 
-    static uint16_t t_index = 0;
+    // t_0 = esp_timer_get_time();/*角度值时间戳us*/
+    motor_get_curent();/*获取电流值*/
+    // t_1 = esp_timer_get_time();
 
-    curent_loop_time_stamp.time[t_index].strat_t = esp_timer_get_time();/*角度值时间戳us*/
 
     /* clark变换,
     输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
@@ -190,8 +210,7 @@ void vfoc_curent_loop(void)
     park_temp = park_tansform(
         clark_temp.I_alpha,
         clark_temp.I_beta,
-        get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
-        // 0.0f
+        get_vfoc_theta_e_rad()
     );
 
 /*---------------------FOC-iq-PI-控制---------------------------*/
@@ -207,8 +226,8 @@ void vfoc_curent_loop(void)
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
 
     /*iq pid 参数,纯PI控制器，kd=0 */
-    curent_loop_iq_pid.kp = 50.0f;
-    curent_loop_iq_pid.ki = 0.8f;//100.5f;/*  */
+    curent_loop_iq_pid.kp = 4.25f;
+    curent_loop_iq_pid.ki = 8250.0f;//100.5f;/*  */
     curent_loop_iq_pid.kd = 0.0f;/*  */
 
     curent_loop_iq_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
@@ -235,7 +254,7 @@ void vfoc_curent_loop(void)
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
 
     /*id pid 参数,纯PI控制器，kd=0 */
-    curent_loop_id_pid.kp = 50.0f;
+    curent_loop_id_pid.kp = 10.0f;
     curent_loop_id_pid.ki = 0.9f;/*  */
     curent_loop_id_pid.kd = 0.0f;/*  */
 
@@ -251,8 +270,8 @@ void vfoc_curent_loop(void)
 
     #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
-        curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
-        // curent_loop_park.Uq = 0.0f;
+        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
+        curent_loop_park.Uq = 0.5f;
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out;
         curent_loop_park.Ud = 0.0f;
     #else
@@ -266,115 +285,41 @@ void vfoc_curent_loop(void)
     curent_loop_iq_pid.last_err_v = curent_loop_iq_pid.err_v;
     curent_loop_id_pid.last_err_v = curent_loop_id_pid.err_v;
 
-    curent_loop_time_stamp.time[t_index].end_t = esp_timer_get_time();/*角度值时间戳us*/
-
-    curent_loop_time_stamp.time[t_index].dt = foc_time_stamp.time[t_index].end_t - 
-                                        foc_time_stamp.time[t_index].strat_t;/*角度值时间戳us*/
-
-    ++t_index;
-    t_index%=10;
+    // t_1 = esp_timer_get_time();
 
 
     #if 1
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>1000 ) 
+        if ( (log_cnt++)>100 ) 
         {
+            // ESP_LOGI(
+            //     TAG,
+            //     "curent_diff_t: %lldus\r\n",
+            //     (t_1-t_0)
+            // );
+
             ESP_LOGI(
                 TAG,
-                "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f\r\n",
+                "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f\r\n",
                 curent_loop_iq_pid.exp_v,//0
                 curent_loop_iq_pid.now_v,//1
                 // park_temp.Uq,
                 curent_loop_park.Uq,//2  
 
                 // get_vfoc_theta_m_deg(),
-                // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                // vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
                 
                 curent_loop_id_pid.exp_v,//3
                 // park_temp.Ud,
                 curent_loop_id_pid.now_v, //4
-                curent_loop_park.Ud
+                curent_loop_park.Ud,
+
+                get_vfoc_ia_current(),
+                get_vfoc_ib_current(),
+                get_vfoc_ic_current(),
+                
+                get_vfoc_theta_e_rad()
             );
-
-            // ESP_LOGI(
-            //     TAG,
-            //     "iq: %.2f,%.2f,%.2f ,%.2f,%.2f,%.2f, %.2f,%.2f, %.2f,%.2f, %.2f,%.2f,%.2f ,%.2f \r\n",
-            //     exp_iq,//0
-            //     now_iq,//1  
-            //     (exp_iq-now_iq),
-
-            //     exp_id,
-            //     now_id,
-            //     (exp_id - now_id),
-
-            //     pid_out_uq,
-            //     pid_out_ud,
-
-            //     clark_temp.I_alpha,
-            //     clark_temp.I_beta,
-
-            //     get_vfoc_ia_current(),
-            //     get_vfoc_ib_current(),
-            //     get_vfoc_ic_current(),
-
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
-            // );
-
-
-            /*分析IA IB IC 和Ialpha Ibeta值，iq,id, theta_e电角度值*/
-            // ESP_LOGI(
-            //     TAG,
-            //     "ia:%.2f,ib:%.2f,ic:%.2f, Ialpha:%.2f, Ibeta:%.2f, iq:%.2f, id:%.2f, theta_e:%.2f \r\n",
-
-            //     get_vfoc_ia_current(),
-            //     get_vfoc_ib_current(),
-            //     get_vfoc_ic_current(),
-
-            //     clark_temp.I_alpha,
-            //     clark_temp.I_beta,
-
-            //     now_iq,
-            //     now_id,
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
-
-            // );
-
-            // ESP_LOGI(
-            //     TAG,
-            //     "ia:%.2fA,ib:%.2fA,ic:%.2fA,m_deg:%.2fdeg,e_rad:%.2frad/s,mech_rpm:%.2f\r\n",
-            //     get_vfoc_ia_current(),
-            //     get_vfoc_ib_current(),
-            //     get_vfoc_ic_current(),
-            //     get_vfoc_theta_m_deg(),
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
-            //     get_vfoc_mech_rpm()
-            // );
-            // ESP_LOGI(
-            //     TAG,
-            //     "foc_task_T:%lldus,foc_time_start:%lld,last_foc_t:%lld ,pwm_isr_t:%lld,curent_t:%lld,angle_t:%lld\r\n",
-            //     foc_time_stamp.time[t_index-2].dt,
-            //     foc_time_stamp.time[t_index-2].strat_t,
-            //     foc_time_stamp.time[t_index-3].strat_t,
-            //     pwm_isr_t_stamp,
-            //     curent_t_stamp,
-            //     angle_t_stamp
-            // );
-
-            // ESP_LOGI(
-            //     TAG,
-            //     "ia:%.2fA,ib:%.2fA,ic:%.2fA,m_deg:%.2f,e_rad:%.2f, duty_ua:%.2f,duty_ub:%.2f,duty_uc:%.2f, \r\n",
-            //     get_vfoc_ia_current(),
-            //     get_vfoc_ib_current(),
-            //     get_vfoc_ic_current(),
-            //     get_vfoc_theta_m_deg(),
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
-
-            //     vfoc_get_pwm_duty().duty_Ua,
-            //     vfoc_get_pwm_duty().duty_Ub,
-            //     vfoc_get_pwm_duty().duty_Uc
-
-
-            // );
 
             log_cnt = 0;
         }
@@ -383,15 +328,6 @@ void vfoc_curent_loop(void)
 }
 
 
-/**
- * @brief 获取clark-park-位置/速度/电流环PID运算后的uq,ud值
- * 
- * @return park_parm_t 
- */
-park_parm_t vfoc_get_uqd(void)
-{
-    return curent_loop_park;
-}
 
 /**
  * @brief 
@@ -400,11 +336,9 @@ park_parm_t vfoc_get_uqd(void)
  */
 static void foc_task(void *arg)
 {
-    static uint32_t log_cnt = 0;
+    static uint32_t foc_log_cnt = 0;
 
-    int64_t curent_t_stamp = 0;/*电流值时间戳*/
-    int64_t angle_t_stamp = 0;/*角度值时间戳*/
-    int64_t pwm_isr_t_stamp = 0;/*PWM ISR产生时间戳*/
+    // int64_t foc_task_time_stamp = 0;/*foc task 时间戳*/
 
     uint16_t t_index = 0;
 
@@ -413,7 +347,9 @@ static void foc_task(void *arg)
 
     while (1)
     {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        // foc_task_time_stamp = esp_timer_get_time();/*加入时间戳*/
         
         foc_time_stamp.time[t_index].strat_t = esp_timer_get_time();/*角度值时间戳us*/
 
@@ -423,23 +359,24 @@ static void foc_task(void *arg)
         //     (foc_time_stamp.time[t_index].strat_t - get_motor_pwm_isr_time_stamp())
         // );
         
-        curent_t_stamp = get_adc_motor_cuent_time_stamp();/*获取电流值的时间戳*/
-        angle_t_stamp = get_motor_angle_time_stamp();/*获取角度值数据的时间戳*/
-        pwm_isr_t_stamp = get_motor_pwm_isr_time_stamp();
 
         if ( get_zero_theta_e_calib_flag() )
         {/*已经进行了电角度零点对齐*/
 
+            // ESP_LOGI( TAG, "foc_task_start!33\r\n" );
             vfoc_curent_loop();
         
         }else{/*未进行电角度零点对齐*/
-
             curent_loop_park.Uq = 0.0f;
             curent_loop_park.Ud = 4.5f;
-
+            // ESP_LOGI(
+            //     TAG,
+            //     "foc_task_start!44,%ld(1000)\r\n",
+            //     zero_e_cnt
+            // );
             ++zero_e_cnt;
             zero_e_mech_sum += get_vfoc_theta_m_deg();
-            if ( zero_e_cnt >=(20*3000) )/*50us一个周期，20次=1ms,需要100ms*/
+            if ( zero_e_cnt >=(1000) )/*1ms一个周期*/
             {
                 // 显式强清零，确保 SVPWM 此时注入的电压向量在绝对的物理 0 度
                 set_vfoc_theta_e_rad(0.0f);
@@ -452,7 +389,7 @@ static void foc_task(void *arg)
                     TAG,
                     "zero_e_mech:%.2f,theta_e(rad/s):%.2f \r\n",
                     get_theta_e_offset_mech(),
-                    get_vfoc_theta_e_rad(get_theta_e_offset_mech())
+                    vfoc_calc_theta_e_rad(get_theta_e_offset_mech())
                 );
 
             }
@@ -487,19 +424,24 @@ static void foc_task(void *arg)
                                           foc_time_stamp.time[t_index].strat_t;/*角度值时间戳us*/
                                           
         #if 0
-            // if ( (t_index==6) && ((log_cnt++)>1000) )
-            if ( (log_cnt++)>1000 ) 
+            // if ( (t_index==6) && ((foc_log_cnt++)>1000) )
+            // if ( (foc_log_cnt++)>1000 ) 
+            // ++foc_log_cnt;
             {
-                ESP_LOGI(
-                    TAG,
-                    "iq: %.2f,%.2f,%.2f ,%.2f,%.2f \r\n",
-                    exp_iq,//0
-                    now_iq,//1  
-                    pid_out_uq,//3
+                if (t_index==6)
+                {
+                    ESP_LOGI(
+                        TAG,
+                        "time:%lld ,%lldus,%lldus,%lldus\r\n",
+                        foc_time_stamp.time[3].strat_t,
+                        foc_time_stamp.time[2].strat_t,
+                        foc_time_stamp.time[3].strat_t - foc_time_stamp.time[2].strat_t,
+                        foc_time_stamp.time[6].dt
 
-                    exp_id,
-                    now_id
-                );
+                    );
+
+                }
+                
 
                 // ESP_LOGI(
                 //     TAG,
@@ -522,7 +464,7 @@ static void foc_task(void *arg)
                 //     get_vfoc_ib_current(),
                 //     get_vfoc_ic_current(),
 
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
                 // );
 
 
@@ -540,7 +482,7 @@ static void foc_task(void *arg)
 
                 //     now_iq,
                 //     now_id,
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
 
                 // );
 
@@ -551,7 +493,7 @@ static void foc_task(void *arg)
                 //     get_vfoc_ib_current(),
                 //     get_vfoc_ic_current(),
                 //     get_vfoc_theta_m_deg(),
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
                 //     get_vfoc_mech_rpm()
                 // );
                 // ESP_LOGI(
@@ -572,7 +514,7 @@ static void foc_task(void *arg)
                 //     get_vfoc_ib_current(),
                 //     get_vfoc_ic_current(),
                 //     get_vfoc_theta_m_deg(),
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
 
                 //     vfoc_get_pwm_duty().duty_Ua,
                 //     vfoc_get_pwm_duty().duty_Ub,
@@ -582,8 +524,8 @@ static void foc_task(void *arg)
                 // );
                 
 
-                t_index = 0;
-                log_cnt = 0;
+                // t_index = 0;
+                // foc_log_cnt = 0;
 
             }
             
@@ -591,6 +533,9 @@ static void foc_task(void *arg)
         
         ++t_index;
         t_index%=10;
+
+        vTaskDelay(pdMS_TO_TICKS(1));
+        // vTaskDelay(pdMS_TO_TICKS(1));
 
     }
 
@@ -615,7 +560,8 @@ void foc_task_creat(void)
     motor_encoder_init();
 
     /*获取电机电流，初始化*/
-    motor_get_current_main();
+    // motor_get_current_main();
+    motor_get_curent_init();
 
     /*
     * 创建 FOC 控制任务。

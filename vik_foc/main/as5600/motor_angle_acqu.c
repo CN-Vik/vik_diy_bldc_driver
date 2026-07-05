@@ -1338,6 +1338,7 @@ float get_motor_rpm_by_angle(float now_angle)
     return rpm_lpf;
 }
 
+#if 0 
 /**
  * @brief 机械角度，电角度，速度采样率1KHZ
  * 
@@ -1409,6 +1410,8 @@ static void motor_get_angle_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
+
+#endif
 
 /**
  * @brief 电机编码器AS5600零点位置校准
@@ -1685,13 +1688,13 @@ void motor_encoder_init(void)
     motor_encoder_get_angle(&l_temp_angle);
     ESP_LOGE(TAG, "motor_encoder_angle_deg:%.2f\r\n",l_temp_angle);
 
-    xTaskCreatePinnedToCore(
-        motor_get_angle_task, // 任务函数
-        "encoder_angle_task",     // 任务名
-        MOTOR_GET_ANGLE_TASK_STACK, // 栈大小
-        NULL,                     // 参数
-        MO_GET_ANGLE_TASK_PRIO,                        // 优先级
-        NULL,                     // 任务句柄
-        MOTOR_GET_ANGLE_TASK_CORE   // 跑在 core 1
-    );
+    // xTaskCreatePinnedToCore(
+    //     motor_get_angle_task, // 任务函数
+    //     "encoder_angle_task",     // 任务名
+    //     MOTOR_GET_ANGLE_TASK_STACK, // 栈大小
+    //     NULL,                     // 参数
+    //     MO_GET_ANGLE_TASK_PRIO,                        // 优先级
+    //     NULL,                     // 任务句柄
+    //     MOTOR_GET_ANGLE_TASK_CORE   // 跑在 core 1
+    // );
 }

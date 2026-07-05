@@ -156,11 +156,11 @@ static bool IRAM_ATTR mcpwm_timer_isr ( mcpwm_timer_handle_t timer,
 
     // if (foc_task_handle)
     // {
-        vTaskNotifyGiveFromISR(
-            foc_task_handle,
-            &hp
-        );
-        pwm_time_stamp = esp_timer_get_time();
+    //     vTaskNotifyGiveFromISR(
+    //         foc_task_handle,
+    //         &hp
+    //     );
+    //     pwm_time_stamp = esp_timer_get_time();
     // }
 
     return hp == pdTRUE;
@@ -243,18 +243,18 @@ esp_err_t esp32_mcpwm_init(void)
 
     ESP_ERROR_CHECK(mcpwm_new_timer(&mcptimer_basic_cfg, &s_m0_pwm.timer));
 
-    /*单项递增计数模式*/
-    mcpwm_timer_event_callbacks_t mctimer_cbs = {
-        .on_empty = mcpwm_timer_isr,/*单向PWM，每个PWM周期开始触发*/
-    };
+    // /*单项递增计数模式*/
+    // mcpwm_timer_event_callbacks_t mctimer_cbs = {
+    //     .on_empty = mcpwm_timer_isr,/*单向PWM，每个PWM周期开始触发*/
+    // };
 
-    ESP_ERROR_CHECK(
-        mcpwm_timer_register_event_callbacks(
-            s_m0_pwm.timer,
-            &mctimer_cbs,
-            NULL
-        )
-    );
+    // ESP_ERROR_CHECK(
+    //     mcpwm_timer_register_event_callbacks(
+    //         s_m0_pwm.timer,
+    //         &mctimer_cbs,
+    //         NULL
+    //     )
+    // );
 
     /*
      * 2. 创建 3 个 operator。
