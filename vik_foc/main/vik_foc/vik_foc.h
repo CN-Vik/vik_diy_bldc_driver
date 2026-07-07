@@ -56,13 +56,17 @@ do {                                            \
 
 
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
-#define UQ_LIMIT            6.5f      // uq = 3.5, iq_max=0.30A ,iq/uq=0.086A/uq
+#define UQ_LIMIT            6.5f      // uq = 6.5, iq_max=0.559A ,iq/uq=0.086A/uq
+#define IQ_LIMIT            (UQ_LIMIT*0.086f)/*uq设置的情况下，iq最大值=0.559*/
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
 
-#define SPEED_I_OUT_LIMIT   1.5f
-#define CURENT_I_OUT_LIMIT  (UQ_LIMIT*0.5f)
+#define CURENT_I_OUT_LIMIT      (UQ_LIMIT*0.5f)
+#define SPEED_PID_OUT_LIMIT     (IQ_LIMIT)/*速度PID输出限幅*/
+#define SPEED_I_OUT_LIMIT       (IQ_LIMIT*0.5)/*速度PID积分限幅*/
 // #define MOTOR0_UQ_DIR   (-1.0f)
+
+
 /*
  * Uq输出方向修正：
  * 用来让 Uq_cmd 对应你想要的电机机械方向。
@@ -127,12 +131,17 @@ typedef struct
     float Ub;
     float Uc;
 
-   volatile float iq;
-   volatile float id;
+    volatile float ia;/*电机a相电流*/
+    volatile float ib;
+    volatile float ic;
+
+    volatile float iq;
+    volatile float id;
 
     pwm_duty_t pwm_duty_val;
-   volatile float mech_rpm;/*机械角度转速*/
-   volatile float mech_w;/*机械角速度*/
+    volatile float mech_rpm;/*机械角度转速*/
+    volatile float w_mech;/*机械角速度*/
+    volatile float w_e;/*电角速度*/
 
 }motor_driver_parm_t;
 
@@ -151,9 +160,20 @@ typedef struct
    volatile float theta_e_offset_mech;/*零电角度时候的机械角度偏移值，每次重启都会一直变化*/
    volatile float zero_theta_e_calib_flag;/*零电角度校准标志*/
 
-   volatile float ia;/*电机a相电流*/
-   volatile float ib;
-   volatile float ic;
+   uint32_t KV; /*电机KV值，KV=100,供电5V，电机理论转速=5*KV=5*100=500rpm*/
+   float Phase_Rs; /*电机相电阻*/
+   float Phase_Ls; /*电机相电感*/
+    /*表贴式 PMSM（最常见BLDC），相电感等于d轴，q轴电感*/
+   float Ld; /*d轴电感*/
+   float Lq; /*q轴电感*/
+
+    volatile float ia;/*电机a相电流*/
+    volatile float ib;
+    volatile float ic;
+
+   float psi_f;/*转子永磁体磁链*/
+   float psi_d;/*d轴磁链*/
+   float psi_q;/*q轴磁链*/
 
 }motor_parm_t;
 
@@ -230,6 +250,10 @@ typedef struct
 }vfoc_time_stamp_t;
 
 
+extern foc_data_t vfoc_m0_dt;
+
+
+
 
 /*-------------------低通滤波---------------------------*/
 /**
@@ -258,7 +282,12 @@ float get_vfoc_theta_e_rad(float m_angle);
 float low_pass_filter(float input, float alpha);
 void vfoc_set_motor_drv_iq(float uq);
 float vfoc_get_motor_drv_iq(void);
-void vfoc_init(void);
+void set_actual_iq(foc_data_t *vfoc_dt , float iq);
+void set_actual_id(foc_data_t *vfoc_dt , float id);
+float get_d_cross_couple(foc_data_t *vfoc_dt);
+float get_q_cross_couple(foc_data_t *vfoc_dt);
+
+void vfoc_init(foc_data_t *vfoc_dt);
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s);
 clark_parm_t clark_tansform(float ia, float ib, float ic);
 motor_driver_parm_t clark_inv_transform(const clark_parm_t *c_v);
@@ -291,8 +320,9 @@ void vfoc_set_svpwm(float uq,
                     float vbus);
 
 float get_vfoc_theta_m_deg(void);
-
-void set_vfoc_mech_w(float mech_w);
+float get_vfoc_theta_e_w(foc_data_t *vfoc_data);
+void calc_vfoc_theta_e_w(foc_data_t *vfoc_data);
+void set_vfoc_mech_w(float w_mech);
 float get_vfoc_mech_w(void);
 void set_vfoc_mech_rpm(float mech_rm);
 float get_vfoc_mech_rpm(void);

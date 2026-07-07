@@ -93,6 +93,7 @@ typedef struct {
 } example_queue_element_t;
 
 
+extern TaskHandle_t motor_get_angle_task_handle;
 
 
 
@@ -114,10 +115,12 @@ typedef struct {
  * 周期性定时最好不要在 ISR 里做复杂工作，
  * ISR 里只发通知，真正的业务逻辑放到任务里执行。
  */
-static bool IRAM_ATTR gptimer_100ms_cb( gptimer_handle_t timer,
+static bool IRAM_ATTR gptimer_1ms_cb( gptimer_handle_t timer,
                                         const gptimer_alarm_event_data_t *edata,
                                         void *user_data)
 {
+    static int32_t cnt = 0;
+#if 0
     /* 当前没有直接使用 timer 参数
      * 有些编译器可能会提示未使用参数，不过 ESP-IDF 示例里这样写没问题。
      */
@@ -136,6 +139,17 @@ static bool IRAM_ATTR gptimer_100ms_cb( gptimer_handle_t timer,
 
     /* 返回是否需要任务切换 */
     return (high_task_awoken == pdTRUE);
+#endif
+
+    BaseType_t hp = pdFALSE;
+
+    vTaskNotifyGiveFromISR(
+        motor_get_angle_task_handle,
+        &hp
+    );
+
+    return hp == pdTRUE;
+
 }
 
 
@@ -149,7 +163,7 @@ static bool IRAM_ATTR gptimer_100ms_cb( gptimer_handle_t timer,
 void gptimer_creat_main(void)
 {
     /* 用于从队列中接收定时器事件 */
-    example_queue_element_t ele;
+    // example_queue_element_t ele;
 
     /* 创建一个 FreeRTOS 队列
      *
@@ -161,13 +175,13 @@ void gptimer_creat_main(void)
      * ISR 中不建议直接做复杂逻辑或 printf。
      * 正确做法是 ISR 发事件，任务里处理事件。
      */
-    QueueHandle_t gptimer_queue = xQueueCreate(10, sizeof(example_queue_element_t));
+    // QueueHandle_t gptimer_queue = xQueueCreate(10, sizeof(example_queue_element_t));
 
     /* 判断队列是否创建成功 */
-    if (!gptimer_queue) {
-        ESP_LOGE(TAG, "Creating gptimer_queue failed");
-        return;
-    }
+    // if (!gptimer_queue) {
+    //     ESP_LOGE(TAG, "Creating gptimer_queue failed");
+    //     return;
+    // }
 
     ESP_LOGI(TAG, "Create gptimer handle");
 
@@ -196,7 +210,7 @@ void gptimer_creat_main(void)
 
         /* 定时器频率
          *
-         * 1000000 Hz = 1 MHz
+         * 1*1000*1000 Hz = 1 MHz
          *
          * 意味着定时器每秒计数 1000000 次。
          * 所以：
@@ -204,7 +218,7 @@ void gptimer_creat_main(void)
          *
          * 这也是后面 alarm_count = 1000000 表示 1 秒的原因。
          */
-        .resolution_hz = 1000000, // 1MHz，1 tick = 1us
+        .resolution_hz = 1*1000*1000, // 1MHz，1 tick = 1us
     };
 
     /* 创建一个新的 GPTimer
@@ -226,7 +240,7 @@ void gptimer_creat_main(void)
      * alarm 后立即停止定时器。
      */
     gptimer_event_callbacks_t gptimer_cb = {
-        .on_alarm = gptimer_100ms_cb,
+        .on_alarm = gptimer_1ms_cb,
     };
 
     /* 注册 GPTimer 回调函数
@@ -238,11 +252,11 @@ void gptimer_creat_main(void)
      * 这里把 gptimer_queue 传进去，
      * 后面中断回调函数里就可以通过 user_data 拿到 queue。
      */
-    ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &gptimer_cb, gptimer_queue));
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &gptimer_cb, NULL));
+    // ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &gptimer_cb, gptimer_queue));
 
     ESP_LOGI(TAG, "Enable timer");
 
-    /* 重新使能定时器 */
     ESP_ERROR_CHECK(gptimer_enable(gptimer));
 
     ESP_LOGI(TAG, "Start timer, auto-reload at alarm event");
@@ -263,7 +277,7 @@ void gptimer_creat_main(void)
      */
     gptimer_alarm_config_t alarm_config2 = {
         .reload_count = 0,
-        .alarm_count = GPTIMER_MS(100), // 周期 = 100*(1000us) = 100ms
+        .alarm_count = GPTIMER_MS(1), // 周期 = 100*(1000us) = 100ms
         .flags.auto_reload_on_alarm = true,
     };
 
@@ -273,12 +287,14 @@ void gptimer_creat_main(void)
     /* 启动定时器 */
     ESP_ERROR_CHECK(gptimer_start(gptimer));
 
+#if 0
     /* 记录 4 次 alarm 事件 */
     int record = 4;
     int64_t time_us;
 
     /* 循环等待 4 次定时器触发 */
     while (record) {
+    // while (1) {
         if (xQueueReceive(gptimer_queue, &ele, pdMS_TO_TICKS(2000))) {
 
             time_us = esp_timer_get_time();
@@ -310,6 +326,7 @@ void gptimer_creat_main(void)
 
     /* 删除 FreeRTOS 队列，释放队列资源 */
     vQueueDelete(gptimer_queue);
+#endif
 }
 
 /*

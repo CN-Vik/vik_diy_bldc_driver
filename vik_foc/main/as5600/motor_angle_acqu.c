@@ -75,13 +75,12 @@ static const char *const s_as5600_magnet_status_str[] = {
     [AS5600_MAGNET_NOT_DETECTED] = "not detected",
 };
 
-
-
+TaskHandle_t motor_get_angle_task_handle = NULL;
 
 
 extern void set_vfoc_theta_m_deg(float parm_angle);
 extern float get_vfoc_theta_m_deg(void);
-extern void set_vfoc_mech_w(float mech_w);
+extern void set_vfoc_mech_w(float w_mech);
 void set_vfoc_mech_rpm(float mech_rm);
 
 
@@ -923,28 +922,80 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
 
 
 /**
+ * @brief 一阶低通滤波器(IIR Low Pass Filter)
+ *
+ * 数学公式：
+ *      y(n) = y(n-1) + α * (x(n) - y(n-1))
+ *
+ * 等价于：
+ *      y = α*x + (1-α)*y_old
+ *
+ * 说明：
+ *      old    ：上一次滤波后的输出值
+ *      input  ：本次新的采样值
+ *      alpha  ：滤波系数(0~1)
+ *
+ * alpha越小：
+ *      - 滤波越强
+ *      - 输出更平滑
+ *      - 响应更慢
+ *
+ * alpha越大：
+ *      - 滤波越弱
+ *      - 响应更快
+ *      - 更接近原始采样值
+ *
+ * 特殊情况：
+ *      alpha = 1.0f
+ *          等于关闭滤波
+ *
+ *      alpha = 0.0f
+ *          输出永远保持旧值
+ *
+ * 本滤波器推荐用于：
+ *      - FOC相电流(Ia、Ib)
+ *      - 母线电流
+ *      - 母线电压
+ *      - 编码器速度
+ *
+ * 不建议用于：
+ *      - ADC Raw原始值
+ *
+ * @param old
+ *      上一次滤波后的输出值
+ *
+ * @param in
+ *      当前新的采样输入值
+ *
+ * @param alpha
+ *      一阶低通滤波系数
+ *      推荐：
+ *          10kHz采样：0.25
+ *          15kHz采样：0.32
+ *          20kHz采样：0.40
+ *
+ * @return
+ *      当前滤波后的输出值
+ */
+static inline float current_lpf(float in, float old)
+{
+    const float alpha = 0.5f;/*0.2~0.4*/
+
+    return old + alpha * (in - old);
+}
+
+/**
  * @brief 根据当前机械角度,计算电机,机械角速度 deg/s
- *
- * @details
- * 这个函数专门给 FOC 位置环的 D 项/阻尼项使用。
- *
- * 作用：
- * 1. 根据 AS5600 当前角度计算机械角速度
- * 2. 自动处理 0° / 360° 跳变
- * 3. 对角速度做一阶低通滤波，减少 AS5600 角度抖动带来的 D 项噪声
- * 4. 静止小抖动时输出 0，避免 D 项残留
- *
+ * 
  * @param now_angle 当前机械角度，单位 deg，范围一般为 0~360
  * @return float 机械角速度，单位 deg/s
  */
-float get_motor_omega_deg_s_by_angle(float now_angle)
+float get_motor_w_deg_s_by_angle(float now_angle)
 {
     static bool first_flag = true;          /* 第一次进入标志 */
     static float last_angle = 0.0f;         /* 上一次角度，单位 deg */
     static int64_t last_time_us = 0;        /* 上一次时间戳，单位 us */
-
-    static float omega_lpf = 0.0f;          /* 低通滤波后的机械角速度，单位 deg/s */
-
+    
     int64_t now_time_us = esp_timer_get_time();
 
     /*
@@ -956,7 +1007,6 @@ float get_motor_omega_deg_s_by_angle(float now_angle)
         first_flag = false;
         last_angle = now_angle;
         last_time_us = now_time_us;
-        omega_lpf = 0.0f;
         return 0.0f;
     }
 
@@ -966,43 +1016,10 @@ float get_motor_omega_deg_s_by_angle(float now_angle)
     int64_t dt_us = now_time_us - last_time_us;
 
     /*
-     * 如果时间差异常，直接返回上一次滤波速度。
-     * 正常情况下不会进这里。
-     */
-    if (dt_us <= 0)
-    {
-        return omega_lpf;
-    }
-
-    /*
-     * 如果间隔时间太短，速度会被放大得很离谱。
-     * 比如 dt_us 只有几十 us，AS5600 角度抖一下，算出来速度会很大。
-     *
-     * 你的编码器任务是 1ms 调一次，所以这里限制最小 dt 为 500us。
-     */
-    if (dt_us < 500)
-    {
-        dt_us = 500;
-    }
-
-    /*
-     * 如果间隔时间太长，说明任务可能被阻塞过。
-     * 这时候算出来的速度不适合用于 D 项，直接弱化处理。
-     *
-     * 你的目标周期是 1ms，这里超过 20ms 就认为异常。
-     */
-    if (dt_us > 20000)
-    {
-        last_angle = now_angle;
-        last_time_us = now_time_us;
-        omega_lpf = 0.0f;
-        return 0.0f;
-    }
-
-    /*
      * us 转成秒。
      */
     float dt_s = (float)dt_us / 1000000.0f;
+    // float dt_s = (float)dt_us / 1e6f;
 
     /*
      * 计算角度变化量。
@@ -1020,73 +1037,44 @@ float get_motor_omega_deg_s_by_angle(float now_angle)
      */
     float delta_deg = now_angle - last_angle;
 
-    if (delta_deg > 180.0f)
-    {
-        delta_deg -= 360.0f;
-    }
-    else if (delta_deg < -180.0f)
-    {
-        delta_deg += 360.0f;
-    }
+    /*正转*/
+    if (delta_deg > 180)  delta_deg -= 360;
+    if (delta_deg < -180) delta_deg += 360;
 
     /*
-     * 静止抖动死区。
-     *
-     * AS5600 是 12bit，1 LSB 大约是：
-     * 360 / 4096 = 0.0879°
-     *
-     * 所以你原来的 0.12° 大概是 1~2 个 LSB。
-     * 如果 D 项还是抖，可以把这个值改成 0.18f 或 0.25f。
-     */
-    if (fabsf(delta_deg) < AS5600_ANGLE_DEADBAND_DEG)
+    * 原始机械角速度，单位 deg/s。
+    */
+    float omega_raw = delta_deg / dt_s;
+
+
+    static float omega_filt = 0.0f;
+    omega_filt = current_lpf(omega_raw, omega_filt);
+
+#if 0
+    static uint32_t log_cnt = 0;
+
+    if ((log_cnt++)>1)
     {
+        log_cnt = 0;
         /*
-         * 关键优化：
-         * 小抖动时，不要保留上一次速度。
-         * 要让速度慢慢衰减到 0，否则 D 项会有残留力矩。
+         * 注意：
+         * FOC 控制周期里不要高频 ESP_LOGI。
+         * 1ms 打印会严重影响控制实时性。
+         * 需要调试时，建议 100ms 打印一次。
          */
-        omega_lpf *= 0.85f;
-
-        if (fabsf(omega_lpf) < 1.0f)
-        {
-            omega_lpf = 0.0f;
-        }
+        ESP_LOGI(TAG,
+                 "last_deg:%.2f, now_deg:%.2f, diff_deg:%.2f, dt_s:%.9f, omega_w:%.3f,omega_filt:%.3f",
+                 last_angle,
+                 now_angle,
+                 delta_deg,
+                 dt_s,
+                 omega_raw,
+                 omega_filt
+        );
     }
-    else
-    {
-        /*
-         * 原始机械角速度，单位 deg/s。
-         */
-        float omega_raw = delta_deg / dt_s;
+    
 
-        /*
-         * 限制异常尖峰速度。
-         * 手拧或者小电机测试阶段，先限制到 ±2000 deg/s。
-         *
-         * 2000 deg/s = 333 rpm 左右。
-         * 如果你后面高速运行，再把这个限幅加大。
-         */
-        if (omega_raw > 2000.0f)
-        {
-            omega_raw = 2000.0f;
-        }
-        else if (omega_raw < -2000.0f)
-        {
-            omega_raw = -2000.0f;
-        }
-
-        /*
-         * 一阶低通滤波。
-         *
-         * alpha 越大，速度越平滑，但响应越慢。
-         * alpha 越小，响应越快，但噪声越大。
-         *
-         * 位置环 D 项建议先用 0.85。
-         */
-        const float alpha = 0.85f;
-
-        omega_lpf = alpha * omega_lpf + (1.0f - alpha) * omega_raw;
-    }
+#endif
 
     /*
      * 更新历史角度和时间。
@@ -1094,248 +1082,49 @@ float get_motor_omega_deg_s_by_angle(float now_angle)
     last_angle = now_angle;
     last_time_us = now_time_us;
 
-    /*
-     * 注意：
-     * FOC 控制周期里不要高频 ESP_LOGI。
-     * 1ms 打印会严重影响控制实时性。
-     * 需要调试时，建议 100ms 打印一次。
-     */
-#if 0
-    ESP_LOGI(TAG,
-             "last_deg:%.2f, now_deg:%.2f, diff_deg:%.2f, dt_s:%.6f, omega_lpf:%.3f",
-             last_angle,
-             now_angle,
-             delta_deg,
-             dt_s,
-             omega_lpf);
-#endif
 
-    return omega_lpf;
+    return omega_filt;
 }
 
 
 
 /**
- * @brief 根据当前机械角度计算电机机械转速 rpm，并做自适应滤波
- *
- * @details
- * 这个函数用于 FOC 速度闭环。
- *
- * 功能：
- * 1. 根据 AS5600 当前角度计算机械转速 rpm
- * 2. 自动处理 0° / 360° 跳变
- * 3. 静止小抖动时，让速度慢慢衰减到 0
- * 4. 根据低速 / 中速 / 高速自动选择滤波强度
- *
- * 速度范围建议：
- * - 低速：0 ~ 150 rpm，滤波强一点，防止速度环抖动
- * - 中速：150 ~ 800 rpm，滤波适中
- * - 高速：800 rpm 以上，滤波弱一点，保证响应速度
- *
- * @param now_angle 当前机械角度，单位 deg，范围一般是 0 ~ 360
- * @return float 滤波后的机械转速，单位 rpm
+ * @brief 根据机械角速度求转速
+ * 
+ * w(r/s)=2*pi*n
+ * 
+ * w(r/min) = 2*pi*n/60
+ * 
+ * n(转速，rpm)=60*w/2*pi=30*w/pi
+ * 
+ * @param w_mech 当前机械角速度,deg/s
+ * @return float 机械角速度
  */
-float get_motor_rpm_by_angle(float now_angle)
+float get_motor_rpm_by_angle(float w_mech)
 {
-    static bool first_flag = true;          /* 第一次进入标志 */
-    static float last_angle = 0.0f;         /* 上一次角度，单位 deg */
-    static int64_t last_time_us = 0;        /* 上一次时间戳，单位 us */
 
-    static float rpm_lpf = 0.0f;            /* 低通滤波后的 rpm 输出 */
+    float rpm_raw = (w_mech)/ (6.0f);
 
-    int64_t now_time_us = esp_timer_get_time();
-
-    /*
-     * 第一次进入时，没有上一次角度和时间，无法计算速度。
-     * 所以只记录当前值，返回 0。
-     */
-    if (first_flag)
+#if 0
+    static uint32_t log_cnt = 0;
+    
+    if ((log_cnt++)>100)
     {
-        first_flag = false;
-        last_angle = now_angle;
-        last_time_us = now_time_us;
-        rpm_lpf = 0.0f;
-        return 0.0f;
-    }
-
-    /*
-     * 计算时间差，单位 us。
-     */
-    int64_t dt_us = now_time_us - last_time_us;
-
-    /*
-     * 时间异常，直接返回上一次滤波结果。
-     */
-    if (dt_us <= 0)
-    {
-        return rpm_lpf;
-    }
-
-    /*
-     * 如果 dt 太小，速度会被放大得很离谱。
-     * 你的编码器任务理论上 1ms 调一次，所以小于 500us 认为不可信。
-     */
-    if (dt_us < 500)
-    {
-        dt_us = 500;
-    }
-
-    /*
-     * 如果 dt 太大，说明任务可能被阻塞。
-     * 这次速度不可信，直接清零或者衰减。
-     */
-    if (dt_us > 20000)
-    {
-        last_angle = now_angle;
-        last_time_us = now_time_us;
-
+        log_cnt = 0;
         /*
-         * 不要突然清零太猛，轻微衰减更平滑。
+         * 注意：
+         * FOC 控制周期里不要高频 ESP_LOGI。
+         * 1ms 打印会严重影响控制实时性。
+         * 需要调试时，建议 100ms 打印一次。
          */
-        rpm_lpf *= 0.5f;
-
-        if (fabsf(rpm_lpf) < 1.0f)
-        {
-            rpm_lpf = 0.0f;
-        }
-
-        return rpm_lpf;
+        ESP_LOGI(
+            TAG,
+            "mech_rpm:%.3f",
+            rpm_raw
+        );
     }
-
-    /*
-     * us 转成秒。
-     */
-    float dt_s = (float)dt_us / 1000000.0f;
-
-    /*
-     * 计算角度差。
-     */
-    float delta_deg = now_angle - last_angle;
-
-    /*
-     * 处理 0° / 360° 跳变。
-     *
-     * 例如：
-     * last_angle = 359°
-     * now_angle  = 1°
-     *
-     * 实际是正向转了 2°，不是反向转了 -358°。
-     */
-    if (delta_deg > 180.0f)
-    {
-        delta_deg -= 360.0f;
-    }
-    else if (delta_deg < -180.0f)
-    {
-        delta_deg += 360.0f;
-    }
-
-    /*
-     * 静止抖动死区。
-     *
-     * AS5600 是 12bit：
-     * 1 LSB = 360 / 4096 ≈ 0.0879°
-     *
-     * 你的 AS5600_ANGLE_DEADBAND_DEG = 0.12°，
-     * 大概就是 1~2 个 LSB。
-     */
-    if (fabsf(delta_deg) < AS5600_ANGLE_DEADBAND_DEG)
-    {
-        /*
-         * 小抖动时，不重新计算速度。
-         * 但是也不能保持旧速度不变。
-         * 要让速度慢慢衰减到 0。
-         */
-        rpm_lpf *= 0.85f;
-
-        if (fabsf(rpm_lpf) < 1.0f)
-        {
-            rpm_lpf = 0.0f;
-        }
-
-        last_angle = now_angle;
-        last_time_us = now_time_us;
-
-        return rpm_lpf;
-    }
-
-    /*
-     * 原始 rpm 计算公式：
-     *
-     * rpm = 每秒转过的圈数 * 60
-     *     = (delta_deg / 360) / dt_s * 60
-     */
-    float rpm_raw = delta_deg * 60.0f / (360.0f * dt_s);
-
-    /*
-     * 异常速度限幅。
-     *
-     * 初学阶段先不要放太大。
-     * 如果你后面要跑到 3000rpm、10000rpm，再按实际能力调大。
-     */
-    const float rpm_abs_limit = 3000.0f;
-
-    if (rpm_raw > rpm_abs_limit)
-    {
-        rpm_raw = rpm_abs_limit;
-    }
-    else if (rpm_raw < -rpm_abs_limit)
-    {
-        rpm_raw = -rpm_abs_limit;
-    }
-
-    /*
-     * 根据速度大小自动选择滤波强度。
-     *
-     * alpha 越大：越平滑，但是响应越慢
-     * alpha 越小：响应越快，但是噪声越大
-     */
-    float rpm_abs = fabsf(rpm_raw);
-    float alpha;
-
-    if (rpm_abs < 150.0f)
-    {
-        /*
-         * 低速区：0 ~ 150 rpm
-         *
-         * 低速时 AS5600 量化误差影响明显，
-         * 速度很容易一跳一跳，所以滤波要强一点。
-         */
-        alpha = 0.92f;
-    }
-    else if (rpm_abs < 800.0f)
-    {
-        /*
-         * 中速区：150 ~ 800 rpm
-         *
-         * 速度变化已经比较明显，可以适当降低滤波。
-         */
-        alpha = 0.80f;
-    }
-    else
-    {
-        /*
-         * 高速区：800 rpm 以上
-         *
-         * 高速时需要更快响应，滤波不能太重。
-         */
-        alpha = 0.60f;
-    }
-
-    /*
-     * 一阶低通滤波：
-     *
-     * 新输出 = alpha * 旧输出 + (1 - alpha) * 新测量值
-     */
-    rpm_lpf = alpha * rpm_lpf + (1.0f - alpha) * rpm_raw;
-
-    /*
-     * 更新历史值。
-     */
-    last_angle = now_angle;
-    last_time_us = now_time_us;
-
-    return rpm_lpf;
+#endif
+    return rpm_raw;
 }
 
 /**
@@ -1348,12 +1137,14 @@ static void motor_get_angle_task(void *arg)
     float angle = 0.0f;
     float rpm = 0.0f;
 
-    int log_cnt = 0;
+    static int log_cnt = 0;
     int64_t angle_time_stamp_start = 0; /*时间戳,单位:us*/
     int64_t angle_time_stamp_end = 0; /*时间戳,单位:us*/
 
     while (1)
     {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
         angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
         if (!motor_encoder_get_angle(&angle))
         {
@@ -1361,14 +1152,18 @@ static void motor_get_angle_task(void *arg)
              * 设置 VFOC 的机械角度
              */
             set_vfoc_theta_m_deg(angle);
-            /*
-             * 每次读取角度后都计算转速
-             * 注意：不要放到 ESP_LOGI 里面算
-             */
-            set_vfoc_mech_rpm( get_motor_rpm_by_angle(angle) );
-            angle_time_stamp = esp_timer_get_time();/*加入时间戳*/
-            // set_vfoc_mech_w( get_motor_omega_deg_s_by_angle(angle) );
+
+            set_vfoc_mech_w( get_motor_w_deg_s_by_angle(angle) );/*计算设置，机械角速度*/
+
+            set_vfoc_mech_rpm( get_motor_rpm_by_angle(get_vfoc_mech_w()) );/*计算转速*/
+
+            calc_vfoc_theta_e_w(&vfoc_m0_dt);/*计算 电角度转速*/
             
+            angle_time_stamp = esp_timer_get_time();/*加入时间戳*/
+            
+            /*获取机械转速*/
+            rpm = get_vfoc_mech_rpm();
+
             /*计算读取，计算一下角度速度值，耗时时间*/
             angle_time_stamp_end = esp_timer_get_time();
             
@@ -1391,13 +1186,17 @@ static void motor_get_angle_task(void *arg)
                     //     (angle_time_stamp_end - angle_time_stamp_start)
                     // );
                     ESP_LOGI(TAG,
-                        "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f,t:%lldus,task_T:%lldus\r\n",
+                        "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f,task_T:%lldus,w_mech:%.2f,w_e%.2f\r\n",
                         angle,
                         get_vfoc_theta_m_deg(),
                         rpm,
-                        angle_time_stamp,
-                        (angle_time_stamp_end - angle_time_stamp_start)
+                        (angle_time_stamp_end - angle_time_stamp_start),
+                        get_vfoc_mech_w(),
+                        get_vfoc_theta_e_w(&vfoc_m0_dt)
+
                     );
+
+
                 }
             #endif
         }
@@ -1406,7 +1205,6 @@ static void motor_get_angle_task(void *arg)
             ESP_LOGE(TAG, "motor_encoder_get_angle_failed!");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -1622,7 +1420,8 @@ uint8_t as5600_init(void)
      * 设备地址通常在驱动里固定为 AS5600 默认地址 0x36。
      */
     as5600_i2c_config_t i2c_conf = {
-        .scl_speed_hz = I2C_MASTER_FREQ_HZ};
+        .scl_speed_hz = I2C_MASTER_FREQ_HZ
+    };
 
     /*
      * 在 I2C bus 上创建 AS5600 传感器对象。
@@ -1691,7 +1490,7 @@ void motor_encoder_init(void)
         MOTOR_GET_ANGLE_TASK_STACK, // 栈大小
         NULL,                     // 参数
         MO_GET_ANGLE_TASK_PRIO,                        // 优先级
-        NULL,                     // 任务句柄
+        &motor_get_angle_task_handle,                     // 任务句柄
         MOTOR_GET_ANGLE_TASK_CORE   // 跑在 core 1
     );
 }

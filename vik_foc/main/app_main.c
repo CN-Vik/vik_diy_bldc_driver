@@ -31,6 +31,8 @@
 
 static const char *TAG = "vik_foc_example_main";
 
+extern void gptimer_creat_main(void);
+
 
 void app_main(void)
 {
@@ -40,5 +42,8 @@ void app_main(void)
     app_rtos_resource_init();
 
     foc_task_creat();
+
+    gptimer_creat_main();
+
 
 }

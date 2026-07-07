@@ -201,7 +201,7 @@ void vfoc_curent_loop(void)
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
     curent_loop_iq_pid.exp_v = 0.20f;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
-    curent_loop_iq_pid.now_v = current_lpf(park_temp.Uq, curent_loop_iq_pid.now_v);
+    curent_loop_iq_pid.now_v = current_lpf(park_temp.iq, curent_loop_iq_pid.now_v);
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
@@ -229,7 +229,7 @@ void vfoc_curent_loop(void)
 
     curent_loop_id_pid.exp_v = 0.0f;/*期望id值*/
     /*当前实际的Uq值*/
-    curent_loop_id_pid.now_v = current_lpf(park_temp.Ud, curent_loop_id_pid.now_v);
+    curent_loop_id_pid.now_v = current_lpf(park_temp.id, curent_loop_id_pid.now_v);
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
@@ -603,7 +603,7 @@ void foc_task_creat(void)
      *  初始化 FOC 参数。
      * 里面设置 pole_pairs = 7。
      */
-    vfoc_init();
+    vfoc_init(&vfoc_m0_dt);
 
     /*初始化 MOS enable GPIO,默认必须关闭 MOS*/
     motor_power_init();
