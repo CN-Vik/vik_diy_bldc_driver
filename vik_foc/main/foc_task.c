@@ -249,12 +249,15 @@ void vfoc_curent_loop(void)
     vfoc_pid_calt(&curent_loop_id_pid);
 /*---------------------FOC-id-PI-控制---------------------------*/
 
+
     #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
-        curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
+        curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
         // curent_loop_park.Uq = 0.0f;
-        // curent_loop_park.Ud = curent_loop_id_pid.pid_out;
+        // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Ud = 0.0f;
+
+        curent_loop_park.Uq = limit_float(curent_loop_park.Uq, +UQ_LIMIT, -UQ_LIMIT);
     #else
             curent_loop_park.Uq = UQ_LIMIT;
             // curent_loop_park.Uq = 0.0f;
@@ -275,13 +278,14 @@ void vfoc_curent_loop(void)
     t_index%=10;
 
 
-    #if 1
+    #if 0
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>1000 ) 
         {
             ESP_LOGI(
                 TAG,
-                "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f\r\n",
+                // "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f, %.2f\r\n",
+                "iq: %.2f,%.2f,%.2f, %.2f,%.2f\r\n",
                 curent_loop_iq_pid.exp_v,//0
                 curent_loop_iq_pid.now_v,//1
                 // park_temp.Uq,
@@ -290,10 +294,12 @@ void vfoc_curent_loop(void)
                 // get_vfoc_theta_m_deg(),
                 // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
                 
-                curent_loop_id_pid.exp_v,//3
-                // park_temp.Ud,
-                curent_loop_id_pid.now_v, //4
-                curent_loop_park.Ud
+                // curent_loop_id_pid.exp_v,//3
+                // // park_temp.Ud,
+                // curent_loop_id_pid.now_v, //4
+                // curent_loop_park.Ud,
+                get_vfoc_theta_e_w(&vfoc_m0_dt),
+                vfoc_m0_dt.motor_drv_val.w_e
             );
 
             // ESP_LOGI(

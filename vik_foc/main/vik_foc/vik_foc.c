@@ -197,13 +197,31 @@ float get_vfoc_mech_w(void)
  */
 void calc_vfoc_theta_e_w(foc_data_t *vfoc_data)
 {
+    static int log_cnt = 0;
+
     if (vfoc_data)
     {
         /*  机械角速度：ωm（deg/s）
             电角速度：ωe (rad/s) = ωm(deg/s) × π/180 × pole_pairs
         */
-        vfoc_data->motor_drv_val.w_e = (vfoc_data->motor_drv_val.w_mech *
-                                                vfoc_data->motor_par.pole_pairs)/(FOC_PI/180.0f);
+        vfoc_data->motor_drv_val.w_e = vfoc_data->motor_drv_val.w_mech 
+                                        * (FOC_PI / 180.0f) 
+                                        * vfoc_data->motor_par.pole_pairs;
+        if (++log_cnt >= 100)
+        {
+            log_cnt = 0;
+
+            ESP_LOGI(
+                TAG,
+                " %.2f,%.2f,%.2f,%.2f,%.2f,%u \r\n",
+                vfoc_m0_dt.motor_par.theta_m,/*机械角度deg*/
+                vfoc_m0_dt.motor_par.theta_e,/*电角度rad/s*/
+                vfoc_data->motor_drv_val.w_mech,/*机械角速度*/
+                vfoc_data->motor_drv_val.w_e,/*电角速度*/
+                vfoc_m0_dt.motor_drv_val.mech_rpm,/*机械转速rpm*/
+                vfoc_data->motor_par.pole_pairs/*磁极对数*/
+            );
+        }
     }
     
 }
@@ -1372,9 +1390,13 @@ float get_q_cross_couple(foc_data_t *vfoc_dt)
 
     if (vfoc_dt)
     {
-        q_cros_data = vfoc_dt->motor_drv_val.w_e *
-                      (vfoc_dt->motor_par.Ld * vfoc_dt->motor_drv_val.id+
-                       vfoc_dt->motor_par.psi_f);
+        /*id = 0*/
+        // q_cros_data = vfoc_dt->motor_drv_val.w_e *
+        //               (vfoc_dt->motor_par.Ld * vfoc_dt->motor_drv_val.id+
+        //                vfoc_dt->motor_par.psi_f);
+        
+        q_cros_data = vfoc_dt->motor_drv_val.w_e * vfoc_dt->motor_par.psi_f;
+
     }
     
     return q_cros_data;
@@ -1387,32 +1409,32 @@ float get_q_cross_couple(foc_data_t *vfoc_dt)
  */
 void vfoc_init(foc_data_t *vfoc_dt)
 {
-    /*所使用的是2208电机，极对数为7*/
-    vfoc_m0_dt.motor_par.theta_m = 0.0f;
-    vfoc_m0_dt.motor_par.theta_e = 0.0f;
-    vfoc_m0_dt.motor_par.pole_pairs = 7;
+    // /*所使用的是2208电机，极对数为7*/
+    // vfoc_m0_dt.motor_par.theta_m = 0.0f;
+    // vfoc_m0_dt.motor_par.theta_e = 0.0f;
+    // vfoc_m0_dt.motor_par.pole_pairs = 7;
     
-    vfoc_m0_dt.park_val.Ud = 0.0f;
-    vfoc_m0_dt.park_val.Uq = 0.0f;
+    // vfoc_m0_dt.park_val.Ud = 0.0f;
+    // vfoc_m0_dt.park_val.Uq = 0.0f;
 
 
-    // if (vfoc_dt)
-    // {
-    //     /*所使用的是2208电机，极对数为7*/
-    //     vfoc_dt->motor_par.theta_m = 0.0f;
-    //     vfoc_dt->motor_par.theta_e = 0.0f;
-    //     vfoc_dt->motor_par.pole_pairs = 7;
-    //     vfoc_dt->motor_par.KV = 100;/*100RPM/V*/
-    //     vfoc_dt->motor_par.Phase_Rs = 8.25f;/*相电阻8.25欧姆*/
-    //     vfoc_dt->motor_par.Phase_Ls = 4.25;/*相电感 4.25mH*/
-    //     vfoc_dt->motor_par.Ld = 4.25;/*D轴电感 4.25mH*/
-    //     vfoc_dt->motor_par.Lq = 4.25;/*D轴电感 4.25mH*/
+    if (vfoc_dt)
+    {
+        /*所使用的是2208电机，极对数为7*/
+        vfoc_dt->motor_par.theta_m = 0.0f;
+        vfoc_dt->motor_par.theta_e = 0.0f;
+        vfoc_dt->motor_par.pole_pairs = 7;
+        vfoc_dt->motor_par.KV = 100;/*100RPM/V*/
+        vfoc_dt->motor_par.Phase_Rs = 8.25f;/*相电阻8.25欧姆*/
+        vfoc_dt->motor_par.Phase_Ls = 0.00425f;/*相电感 4.25mH*/
+        vfoc_dt->motor_par.Ld = 0.00425f;/*D轴电感 4.25mH*/
+        vfoc_dt->motor_par.Lq = 0.00425f;/*D轴电感 4.25mH*/
         
-    //     vfoc_dt->motor_par.psi_f = (60.0/(2*FOC_PI*vfoc_dt->motor_par.KV*vfoc_dt->motor_par.pole_pairs));
-
-    //     vfoc_dt->park_val.Ud = 0.0f;
-    //     vfoc_dt->park_val.Uq = 0.0f;
-    // }
+        vfoc_dt->motor_par.psi_f = 0.00788f;/*计算得出7.88mWb*/
+        
+        vfoc_dt->park_val.Ud = 0.0f;
+        vfoc_dt->park_val.Uq = 0.0f;
+    }
 
 
 }

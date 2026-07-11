@@ -979,7 +979,7 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
  */
 static inline float current_lpf(float in, float old)
 {
-    const float alpha = 0.5f;/*0.2~0.4*/
+    const float alpha = 0.45f;/*0.2~0.4*/
 
     return old + alpha * (in - old);
 }
@@ -1148,6 +1148,8 @@ static void motor_get_angle_task(void *arg)
         angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
         if (!motor_encoder_get_angle(&angle))
         {
+
+            angle = current_lpf(angle, get_vfoc_theta_m_deg()); 
             /*
              * 设置 VFOC 的机械角度
              */
