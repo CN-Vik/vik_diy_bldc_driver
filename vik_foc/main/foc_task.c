@@ -201,7 +201,7 @@ void vfoc_curent_loop(void)
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
     curent_loop_iq_pid.exp_v = 0.20f;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
-    curent_loop_iq_pid.now_v = current_lpf(park_temp.iq, curent_loop_iq_pid.now_v);
+    curent_loop_iq_pid.now_v = park_temp.iq;/*这个不能滤波，这个iq值是当前最真实的数据反馈*/
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
@@ -229,7 +229,7 @@ void vfoc_curent_loop(void)
 
     curent_loop_id_pid.exp_v = 0.0f;/*期望id值*/
     /*当前实际的Uq值*/
-    curent_loop_id_pid.now_v = current_lpf(park_temp.id, curent_loop_id_pid.now_v);
+    curent_loop_id_pid.now_v = park_temp.id;/*这个不能滤波，这个id值是当前最真实的数据反馈*/
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
@@ -252,12 +252,12 @@ void vfoc_curent_loop(void)
 
     #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
-        curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
-        // curent_loop_park.Uq = 0.0f;
+        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
+        curent_loop_park.Uq = 4.0f;
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Ud = 0.0f;
 
-        curent_loop_park.Uq = limit_float(curent_loop_park.Uq, +UQ_LIMIT, -UQ_LIMIT);
+        curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
     #else
             curent_loop_park.Uq = UQ_LIMIT;
             // curent_loop_park.Uq = 0.0f;
@@ -280,7 +280,7 @@ void vfoc_curent_loop(void)
 
     #if 0
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>1000 ) 
+        if ( (log_cnt++)>100 ) 
         {
             ESP_LOGI(
                 TAG,

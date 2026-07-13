@@ -13,7 +13,7 @@
 #include "esp_log.h"
 #include "stdbool.h"
 
-static const char *TAG = "vik_foc:";
+static const char *TAG = "vik_foc";
 
 
 /**
@@ -197,8 +197,6 @@ float get_vfoc_mech_w(void)
  */
 void calc_vfoc_theta_e_w(foc_data_t *vfoc_data)
 {
-    static int log_cnt = 0;
-
     if (vfoc_data)
     {
         /*  机械角速度：ωm（deg/s）
@@ -207,21 +205,23 @@ void calc_vfoc_theta_e_w(foc_data_t *vfoc_data)
         vfoc_data->motor_drv_val.w_e = vfoc_data->motor_drv_val.w_mech 
                                         * (FOC_PI / 180.0f) 
                                         * vfoc_data->motor_par.pole_pairs;
-        if (++log_cnt >= 100)
-        {
-            log_cnt = 0;
-
-            ESP_LOGI(
-                TAG,
-                " %.2f,%.2f,%.2f,%.2f,%.2f,%u \r\n",
-                vfoc_m0_dt.motor_par.theta_m,/*机械角度deg*/
-                vfoc_m0_dt.motor_par.theta_e,/*电角度rad/s*/
-                vfoc_data->motor_drv_val.w_mech,/*机械角速度*/
-                vfoc_data->motor_drv_val.w_e,/*电角速度*/
-                vfoc_m0_dt.motor_drv_val.mech_rpm,/*机械转速rpm*/
-                vfoc_data->motor_par.pole_pairs/*磁极对数*/
-            );
-        }
+        #if 0
+            static int log_cnt = 0;
+            if ((++log_cnt) >= 100)
+            {
+                log_cnt = 0;
+                ESP_LOGI(
+                    TAG,
+                    "calv_e:%.2f,%.2f,%.2f,%.2f,%.2f,%u \r\n",
+                    vfoc_m0_dt.motor_par.theta_m,/*机械角度deg*/
+                    vfoc_m0_dt.motor_par.theta_e,/*电角度rad/s*/
+                    vfoc_data->motor_drv_val.w_mech,/*机械角速度*/
+                    vfoc_data->motor_drv_val.w_e,/*电角速度*/
+                    vfoc_m0_dt.motor_drv_val.mech_rpm,/*机械转速rpm*/
+                    vfoc_data->motor_par.pole_pairs/*磁极对数*/
+                );
+            }
+        #endif
     }
     
 }
