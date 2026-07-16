@@ -1397,6 +1397,21 @@ float get_q_cross_couple(foc_data_t *vfoc_dt)
         
         q_cros_data = vfoc_dt->motor_drv_val.w_e * vfoc_dt->motor_par.psi_f;
 
+        #if 0
+            static int log_cnt = 0;
+            if ((++log_cnt) >= 100)
+            {
+                log_cnt = 0;
+                ESP_LOGI(
+                    TAG,
+                    "q_cros:%.2f,%.2f,%.2f \r\n",
+                    q_cros_data,
+                    vfoc_dt->motor_drv_val.w_e,/*电角速度*/
+                    vfoc_dt->motor_par.psi_f
+                );
+            }
+        #endif
+
     }
     
     return q_cros_data;

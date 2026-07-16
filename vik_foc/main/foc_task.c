@@ -199,7 +199,7 @@ void vfoc_curent_loop(void)
     /*当前电源每V电压支持0.071A， 0.071A/V，
     12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
-    curent_loop_iq_pid.exp_v = 0.20f;//0.30f;/*期望iq值*/
+    curent_loop_iq_pid.exp_v = 0.40f;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
     curent_loop_iq_pid.now_v = park_temp.iq;/*这个不能滤波，这个iq值是当前最真实的数据反馈*/
 
@@ -207,12 +207,12 @@ void vfoc_curent_loop(void)
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
 
     /*iq pid 参数,纯PI控制器，kd=0 */
-    curent_loop_iq_pid.kp = 50.0f;
-    curent_loop_iq_pid.ki = 0.8f;//100.5f;/*  */
-    curent_loop_iq_pid.kd = 0.0f;/*  */
+    curent_loop_iq_pid.kp = 13.35f;
+    curent_loop_iq_pid.ki = 25918.0f;/*ki = R*2pi*fc，fc:电流环频率500HZ*/
+    curent_loop_iq_pid.kd = 0.0f;
 
-    curent_loop_iq_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
-    curent_loop_iq_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
+    curent_loop_iq_pid.ki_integral_min = -0.00025f;/* Uqmax/Ki */
+    curent_loop_iq_pid.ki_integral_max = +0.00025f;
 
     /*PID输出结果限幅*/
     curent_loop_iq_pid.pid_out_max = +UQ_LIMIT;
@@ -235,9 +235,9 @@ void vfoc_curent_loop(void)
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
 
     /*id pid 参数,纯PI控制器，kd=0 */
-    curent_loop_id_pid.kp = 50.0f;
-    curent_loop_id_pid.ki = 0.9f;/*  */
-    curent_loop_id_pid.kd = 0.0f;/*  */
+    curent_loop_id_pid.kp = 13.35f;
+    curent_loop_id_pid.ki = 0.0f;
+    curent_loop_id_pid.kd = 0.0f;
 
     curent_loop_id_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
     curent_loop_id_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
@@ -253,7 +253,8 @@ void vfoc_curent_loop(void)
     #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
         // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
-        curent_loop_park.Uq = 4.0f;
+        curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
+        // curent_loop_park.Uq = 4.0f;
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Ud = 0.0f;
 
@@ -278,18 +279,21 @@ void vfoc_curent_loop(void)
     t_index%=10;
 
 
-    #if 0
+    #if 1
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>100 ) 
         {
             ESP_LOGI(
                 TAG,
                 // "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f, %.2f\r\n",
-                "iq: %.2f,%.2f,%.2f, %.2f,%.2f\r\n",
+                // "iq: %.2f,%.2f,%.2f, %.2f, %.2f,%.2f\r\n",
+                "iq: %.2f,%.2f,%.2f, %.2f \r\n",
                 curent_loop_iq_pid.exp_v,//0
                 curent_loop_iq_pid.now_v,//1
-                // park_temp.Uq,
                 curent_loop_park.Uq,//2  
+
+                (curent_loop_iq_pid.kp_out + curent_loop_iq_pid.ki_out + curent_loop_iq_pid.kd_out)
+                // park_temp.Uq,
 
                 // get_vfoc_theta_m_deg(),
                 // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
@@ -298,8 +302,8 @@ void vfoc_curent_loop(void)
                 // // park_temp.Ud,
                 // curent_loop_id_pid.now_v, //4
                 // curent_loop_park.Ud,
-                get_vfoc_theta_e_w(&vfoc_m0_dt),
-                vfoc_m0_dt.motor_drv_val.w_e
+                // get_vfoc_theta_e_w(&vfoc_m0_dt),
+                // vfoc_m0_dt.motor_drv_val.w_e
             );
 
             // ESP_LOGI(
