@@ -83,6 +83,8 @@ vfoc_time_stamp_t curent_loop_time_stamp={0};
 
 vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
+vfoc_pid_t speed_loop_pid = {0};
+
 
 park_parm_t curent_loop_park = {
     .Uq =0.0f,
@@ -159,11 +161,76 @@ static inline float current_lpf(float in, float old)
 }
 
 
+
+/**
+ * @brief 速度环PI控制
+ * 
+ * @param exp_sped_rpm (r/min)  期望转速
+ * @return float PID算出来的结果
+ */
+float vfoc_speed_loop(float exp_sped_rpm)
+{
+    static uint32_t log_cnt = 0;
+
+    /*设置速度环周期值*/
+    speed_loop_pid.pid_dt = SPEED_LOOP_DT;
+
+    /*设置转速期望值*/
+    speed_loop_pid.exp_v = exp_sped_rpm;
+
+    /*获取当前转速实际值*/
+    speed_loop_pid.now_v = get_vfoc_mech_rpm();
+
+    /*计算转速误差 = 期望值-实际值*/
+    speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
+
+    speed_loop_pid.kp = 10.5f;
+    speed_loop_pid.ki = 0.00f;
+    speed_loop_pid.kd = 0.0f;
+
+    speed_loop_pid.ki_integral_max = +SPEED_I_OUT_LIMIT;
+    speed_loop_pid.ki_integral_min = -SPEED_I_OUT_LIMIT;
+
+    speed_loop_pid.pid_out_max = +SPEED_PID_OUT_LIMIT;
+    speed_loop_pid.pid_out_min = SPEED_PID_OUT_LIMIT;
+
+    vfoc_pid_calt(&speed_loop_pid);
+
+    speed_loop_pid.last_err_v = speed_loop_pid.err_v;
+
+    #if 0
+        // if ( (t_index==6) && ((log_cnt++)>1000) )
+        if ( (log_cnt++)>10 ) 
+        {
+            log_cnt = 0;
+            ESP_LOGI(
+                TAG,
+                "sped_rpm: %.2f,%.2f,%.2f,%.2f\r\n",
+                speed_loop_pid.exp_v,
+                // speed_loop_pid.now_v,
+                get_vfoc_mech_rpm(),
+                speed_loop_pid.pid_out,/*iqref*/
+                curent_loop_iq_pid.now_v/*iq*/
+                
+            );
+
+        }
+    #endif
+
+    return speed_loop_pid.pid_out;
+
+}
+
+
+
+
 /**
  * @brief 电流环
  * 
+ * @param exp_iq 
+ * @param exp_id 
  */
-void vfoc_curent_loop(void)
+void vfoc_curent_loop(float exp_iq, float exp_id)
 {
     clark_parm_t clark_temp={0};
     park_parm_t park_temp={0};
@@ -199,7 +266,7 @@ void vfoc_curent_loop(void)
     /*当前电源每V电压支持0.071A， 0.071A/V，
     12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
-    curent_loop_iq_pid.exp_v = 0.40f;//0.30f;/*期望iq值*/
+    curent_loop_iq_pid.exp_v = exp_iq;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
     curent_loop_iq_pid.now_v = park_temp.iq;/*这个不能滤波，这个iq值是当前最真实的数据反馈*/
 
@@ -227,7 +294,7 @@ void vfoc_curent_loop(void)
 /*---------------------FOC-id-PI-控制---------------------------*/
     curent_loop_id_pid.pid_dt = CURRENT_LOOP_DT;
 
-    curent_loop_id_pid.exp_v = 0.0f;/*期望id值*/
+    curent_loop_id_pid.exp_v = exp_id;/*期望id值*/
     /*当前实际的Uq值*/
     curent_loop_id_pid.now_v = park_temp.id;/*这个不能滤波，这个id值是当前最真实的数据反馈*/
 
@@ -279,7 +346,7 @@ void vfoc_curent_loop(void)
     t_index%=10;
 
 
-    #if 1
+    #if 0
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>100 ) 
         {
@@ -404,7 +471,16 @@ park_parm_t vfoc_get_uqd(void)
 }
 
 /**
- * @brief 
+ * @brief 20KHZ
+ * 
+ * 位置环  << 速度环  <<  电流环
+ * 
+ * 
+位置环：100Hz
+    ↓
+速度环：500Hz~1kHz
+    ↓
+电流环：10kHz~30kHz
  * 
  * @param arg 
  */
@@ -420,6 +496,11 @@ static void foc_task(void *arg)
 
     uint32_t zero_e_cnt = 0;
     float zero_e_mech_sum = 0.0f;
+
+    float motor_exp_rpm = 0.0;
+    float iq_ref = 0.0;
+
+    uint16_t foc_task_freq_div = 0;
 
     while (1)
     {
@@ -440,7 +521,16 @@ static void foc_task(void *arg)
         if ( get_zero_theta_e_calib_flag() )
         {/*已经进行了电角度零点对齐*/
 
-            vfoc_curent_loop();
+            /*20KHZ/20=1KHZ*/
+            if ((++foc_task_freq_div)>=20)
+            {
+                foc_task_freq_div = 0;
+                motor_exp_rpm = 10.0f;
+                iq_ref = vfoc_speed_loop(motor_exp_rpm);
+            }
+            
+            // iq_ref = 0.5f;
+            vfoc_curent_loop(iq_ref, 0.0f);
         
         }else{/*未进行电角度零点对齐*/
 

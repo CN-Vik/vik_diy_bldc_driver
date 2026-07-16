@@ -243,6 +243,28 @@ float get_vfoc_theta_e_w(foc_data_t *vfoc_data)
 void set_vfoc_mech_rpm(float mech_rm)
 {
     vfoc_m0_dt.motor_drv_val.mech_rpm = mech_rm;
+
+#if 1
+    static uint32_t log_cnt = 0;
+    
+    if ((log_cnt++)>100)
+    {
+        log_cnt = 0;
+        /*
+         * 注意：
+         * FOC 控制周期里不要高频 ESP_LOGI。
+         * 1ms 打印会严重影响控制实时性。
+         * 需要调试时，建议 100ms 打印一次。
+         */
+        ESP_LOGI(
+            TAG,
+            "sw_mech: %.2f,%.3f\r\n",
+            mech_rm,
+            vfoc_m0_dt.motor_drv_val.mech_rpm
+        );
+    }
+#endif
+
 }
 
 
@@ -1286,55 +1308,6 @@ static float angle_error_deg(float expct_deg, float current_deg)
 
     return err;
 }
-
-
-
-/**
- * @brief 位置环
- * 
- */
-void vfoc_position_loop(void)
-{
-    // float now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
-
-    // 第三，如果用在位置环角度控制，err_now = exp_v - now_v 暂时不适合处理 0°/360° 跨界。速度环没问题，位置环后面要换成：
-
-    // err_now = angle_error_deg(exp_v, now_v);
-
-    // LIMIT_EXP_MECH_360(exp_angle);
-    // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
-    // now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
-    // err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
-
-}
-
-/**
- * @brief 速度环
- * 
- */
-void vfoc_speed_loop(void)
-{
-    // float now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
-
-}
-
-
-/**
- * @brief 力矩环
- * 
- */
-void vfoc_torque_loop(void)
-{
-        // LIMIT_EXP_MECH_360(exp_angle);
-    // now_angle = get_vfoc_theta_m_deg();/* 获取当前机械角度值 */
-    // err_angle = angle_error_deg( exp_angle , now_angle );/*本次误差值*/
-    // now_motor_rpm = get_vfoc_mech_rpm();/*获取当前转速*/
-    // err_motor_rpm = exp_motor_rpm - now_motor_rpm;/*本次误差值*/
-    
-}
-
-
-
 
 void set_actual_iq(foc_data_t *vfoc_dt , float iq)
 {
