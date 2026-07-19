@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define TIME_STAMP_SIZE     100
 
 /*更号3*/
 #define SQRT3               1.7320508075688772f
@@ -244,7 +245,7 @@ typedef struct
 
 typedef struct 
 {
-    time_stamp_t time[100];
+    time_stamp_t time[TIME_STAMP_SIZE];
     uint64_t index;/*索引号*/
 
 }vfoc_time_stamp_t;

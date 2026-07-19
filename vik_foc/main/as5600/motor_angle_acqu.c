@@ -49,6 +49,7 @@ as5600_test_conf_readback();      // 测试配置寄存器读写
 #include "esp_timer.h"
 #include "app_rtos_config.h"
 #include "vik_foc.h"
+#include "app_rtos_resource.h"
 
 
 extern void set_vfoc_theta_m_deg(float parm_angle);
@@ -1251,7 +1252,7 @@ float get_motor_rpm_by_angle(float w_mech)
 static void motor_get_angle_task(void *arg)
 {
     float angle = 0.0f;
-    float rpm = 0.0f;
+    float m0_mech_rpm = 0.0f;
 
     static int log_cnt = 0;
     int64_t angle_time_stamp_start = 0; /*时间戳,单位:us*/
@@ -1286,12 +1287,26 @@ static void motor_get_angle_task(void *arg)
                 angle_cont
             );
 
+            m0_mech_rpm = (pll.omega/(6.0f));
             // set_vfoc_mech_w( get_motor_w_deg_s_by_angle(angle) );/*计算设置，机械角速度*/
             set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
+            // ========== 队列发送核心代码 ==========
+            // 队列深度10，满了直接丢弃本次转速，不阻塞任务
+            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
+            // if(xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0) != pdPASS)
+            // {
+            //     // 队列已满，数据丢弃，可打印提示（调试用）
+            //     ESP_LOGW(
+            //         TAG,
+            //         "g_motor0_mech_rpm_queue send fialed!,remi:%d,use:%d\r\n",
+            //         uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+            //         uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+            //     );
+            // }
 
-            set_vfoc_mech_rpm( get_motor_rpm_by_angle(get_vfoc_mech_w()) );/*计算转速*/
+            // set_vfoc_mech_rpm( get_motor_rpm_by_angle(get_vfoc_mech_w()) );/*计算转速*/
 
-            calc_vfoc_theta_e_w(&vfoc_m0_dt);/*计算 电角度转速*/
+            // calc_vfoc_theta_e_w(&vfoc_m0_dt);/*计算 电角度转速*/
             
             // angle_time_stamp = esp_timer_get_time();/*加入时间戳*/
             

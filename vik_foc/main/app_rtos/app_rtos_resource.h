@@ -105,6 +105,8 @@ extern EventGroupHandle_t g_app_event_group;
 extern QueueHandle_t g_motor_cmd_queue;
 /* UART打印队列 */
 extern QueueHandle_t g_uart_print_queue;
+extern QueueHandle_t g_motor0_mech_rpm_queue;
+
 /*----------------队列---------------------*/
 
 

@@ -4,7 +4,14 @@
             "name": "Win32",
             "includePath": [
                 "${workspaceFolder}/**",
-                "C:\\esp\\v5.3.5\\esp-idf\\components"
+                "C:\\esp\\v5.3.5\\esp-idf\\components",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos\\FreeRTOS-Kernel\\include\\freertos",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos\\FreeRTOS-Kernel\\portable\\xtensa\\include\\freertos",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos\\FreeRTOS-Kernel",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos\\FreeRTOS-Kernel-SMP\\include\\freertos",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos\\FreeRTOS-Kernel-SMP",
+                "C:\\esp\\v5.3.5\\esp-idf\\components\\freertos\\FreeRTOS-Kernel-SMP\\portable\\xtensa"
             ],
             "defines": [
                 "_DEBUG",
