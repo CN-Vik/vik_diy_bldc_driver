@@ -212,7 +212,6 @@ esp_err_t motor_set_pwm_duty(float duty_u, float duty_v, float duty_w)
 
 esp_err_t esp32_mcpwm_init(void)
 {
-    ESP_LOGI(TAG, "[motor_cfg_pwm.c] 地址=%p, 值=%p", &foc_task_handle, foc_task_handle);
     int i;
     const int pwm_gpio[3] = {
         M0_IN1_GPIO,

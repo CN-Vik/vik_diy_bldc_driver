@@ -80,9 +80,12 @@ TaskHandle_t foc_task_handle = NULL;
 
 vfoc_time_stamp_t foc_time_stamp={0};
 vfoc_time_stamp_t curent_loop_time_stamp={0};
+vfoc_time_stamp_t sped_loop_time_stamp={0};
 
 vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
+vfoc_pid_t speed_loop_pid = {0};
+
 
 park_parm_t curent_loop_park = {
     .Uq =0.0f,
@@ -159,20 +162,142 @@ static inline float current_lpf(float in, float old)
 }
 
 
+
+/**
+ * @brief 速度环PI控制
+ * 
+ * @param exp_sped_rpm (r/min)  期望转速
+ * @return float PID算出来的结果
+ */
+float vfoc_speed_loop(float exp_sped_rpm)
+{
+    static uint32_t log_cnt = 0;
+    float m0_mech_rpm = 0.0f;
+
+    sped_loop_time_stamp.time[(++sped_loop_time_stamp.index) % TIME_STAMP_SIZE].strat_t = esp_timer_get_time();
+    #if 0 /*任务运行频率统计*/
+        if ( sped_loop_time_stamp.index == 20 )
+        {
+            ESP_LOGW(
+                TAG,
+                "vfoc_speed_loop_t:%lld,%lld,%lld us\r\n",
+                sped_loop_time_stamp.time[20-1].strat_t,
+                sped_loop_time_stamp.time[20-2].strat_t,
+                sped_loop_time_stamp.time[20-2].strat_t - sped_loop_time_stamp.time[20-1].strat_t
+
+            );
+
+            sped_loop_time_stamp.index = 0;
+        }
+    #endif
+
+    /*设置速度环周期值*/
+    speed_loop_pid.pid_dt = SPEED_LOOP_DT;
+
+    /*设置转速期望值*/
+    speed_loop_pid.exp_v = exp_sped_rpm;
+
+    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mech_rpm, portMAX_DELAY)!= pdPASS )
+    {
+        ESP_LOGW(
+            TAG,
+            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+        );
+    }
+
+    /*获取当前转速实际值*/
+    speed_loop_pid.now_v = m0_mech_rpm;
+
+    /*计算转速误差 = 期望值-实际值*/
+    speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
+
+    speed_loop_pid.kp = 10.5f;
+    speed_loop_pid.ki = 0.00f;
+    speed_loop_pid.kd = 0.0f;
+
+    speed_loop_pid.ki_integral_max = +SPEED_I_OUT_LIMIT;
+    speed_loop_pid.ki_integral_min = -SPEED_I_OUT_LIMIT;
+
+    speed_loop_pid.pid_out_max = +SPEED_PID_OUT_LIMIT;
+    speed_loop_pid.pid_out_min = SPEED_PID_OUT_LIMIT;
+
+    vfoc_pid_calt(&speed_loop_pid);
+
+    speed_loop_pid.last_err_v = speed_loop_pid.err_v;
+
+    sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].end_t = esp_timer_get_time();
+    sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].dt = 
+        sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].end_t -
+        sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].strat_t;
+    #if 0 /*任务运行时长统计*/
+        if ( sped_loop_time_stamp.index == 20 )
+        {
+            ESP_LOGW(
+                TAG,
+                "vfoc_speed_loop_DT:%lldus\r\n",
+                sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].dt
+            );
+
+            sped_loop_time_stamp.index = 0;
+        }
+    #endif
+
+    
+    #if 1
+        // if ( (t_index==6) && ((log_cnt++)>1000) )
+        if ( (log_cnt++)>100 ) 
+        {
+            log_cnt = 0;
+            ESP_LOGI(
+                TAG,
+                "vfoc_sped: %.2f,%.2f,%.2f,%.2f\r\n",
+                speed_loop_pid.exp_v,
+                speed_loop_pid.now_v,
+                speed_loop_pid.pid_out,/*iqref*/
+                curent_loop_iq_pid.now_v/*iq*/
+                
+            );
+
+        }
+    #endif
+
+    return speed_loop_pid.pid_out;
+
+}
+
+
+
+
 /**
  * @brief 电流环
  * 
+ * @param exp_iq 
+ * @param exp_id 
  */
-void vfoc_curent_loop(void)
+void vfoc_curent_loop(float exp_iq, float exp_id)
 {
     clark_parm_t clark_temp={0};
     park_parm_t park_temp={0};
 
     static uint32_t log_cnt = 0;
 
-    static uint16_t t_index = 0;
+    curent_loop_time_stamp.time[(++curent_loop_time_stamp.index)%TIME_STAMP_SIZE].strat_t = esp_timer_get_time();/*角度值时间戳us*/
+    #if 0
+        if ( curent_loop_time_stamp.index == 20 )
+        {
+            ESP_LOGW(
+                TAG,
+                "vfoc_curent_loop_t:%lld,%lld,%lld us\r\n",
+                curent_loop_time_stamp.time[20-1].strat_t,
+                curent_loop_time_stamp.time[20-2].strat_t,
+                curent_loop_time_stamp.time[20-2].strat_t - curent_loop_time_stamp.time[20-1].strat_t
 
-    curent_loop_time_stamp.time[t_index].strat_t = esp_timer_get_time();/*角度值时间戳us*/
+            );
+            curent_loop_time_stamp.index = 0;
+        }
+    #endif
 
     /* clark变换,
     输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
@@ -199,20 +324,20 @@ void vfoc_curent_loop(void)
     /*当前电源每V电压支持0.071A， 0.071A/V，
     12V 是母线总电压（VBUS），在 SVPWM 调制下，d/q 轴电压的理论最大幅值只有约 6.93V 
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
-    curent_loop_iq_pid.exp_v = 0.20f;//0.30f;/*期望iq值*/
+    curent_loop_iq_pid.exp_v = exp_iq;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
-    curent_loop_iq_pid.now_v = current_lpf(park_temp.iq, curent_loop_iq_pid.now_v);
+    curent_loop_iq_pid.now_v = park_temp.iq;/*这个不能滤波，这个iq值是当前最真实的数据反馈*/
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
 
     /*iq pid 参数,纯PI控制器，kd=0 */
-    curent_loop_iq_pid.kp = 50.0f;
-    curent_loop_iq_pid.ki = 0.8f;//100.5f;/*  */
-    curent_loop_iq_pid.kd = 0.0f;/*  */
+    curent_loop_iq_pid.kp = 13.35f;
+    curent_loop_iq_pid.ki = 25918.0f;/*ki = R*2pi*fc，fc:电流环频率500HZ*/
+    curent_loop_iq_pid.kd = 0.0f;
 
-    curent_loop_iq_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
-    curent_loop_iq_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
+    curent_loop_iq_pid.ki_integral_min = -0.00025f;/* Uqmax/Ki */
+    curent_loop_iq_pid.ki_integral_max = +0.00025f;
 
     /*PID输出结果限幅*/
     curent_loop_iq_pid.pid_out_max = +UQ_LIMIT;
@@ -227,17 +352,17 @@ void vfoc_curent_loop(void)
 /*---------------------FOC-id-PI-控制---------------------------*/
     curent_loop_id_pid.pid_dt = CURRENT_LOOP_DT;
 
-    curent_loop_id_pid.exp_v = 0.0f;/*期望id值*/
+    curent_loop_id_pid.exp_v = exp_id;/*期望id值*/
     /*当前实际的Uq值*/
-    curent_loop_id_pid.now_v = current_lpf(park_temp.id, curent_loop_id_pid.now_v);
+    curent_loop_id_pid.now_v = park_temp.id;/*这个不能滤波，这个id值是当前最真实的数据反馈*/
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
 
     /*id pid 参数,纯PI控制器，kd=0 */
-    curent_loop_id_pid.kp = 50.0f;
-    curent_loop_id_pid.ki = 0.9f;/*  */
-    curent_loop_id_pid.kd = 0.0f;/*  */
+    curent_loop_id_pid.kp = 13.35f;
+    curent_loop_id_pid.ki = 0.0f;
+    curent_loop_id_pid.kd = 0.0f;
 
     curent_loop_id_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
     curent_loop_id_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
@@ -248,52 +373,70 @@ void vfoc_curent_loop(void)
     /* FOC电流环_Id_PI控制 */
     vfoc_pid_calt(&curent_loop_id_pid);
 /*---------------------FOC-id-PI-控制---------------------------*/
-
-    #if 1
+    #if 0
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
+        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
-        // curent_loop_park.Uq = 0.0f;
-        // curent_loop_park.Ud = curent_loop_id_pid.pid_out;
-        curent_loop_park.Ud = 0.0f;
+        // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
-            curent_loop_park.Uq = UQ_LIMIT;
-            // curent_loop_park.Uq = 0.0f;
-            // curent_loop_park.Ud = 3.5f;
-            curent_loop_park.Ud = 0.0f;
+        // curent_loop_park.Uq = UQ_LIMIT;
+        curent_loop_park.Uq = 0.5f;
+        curent_loop_park.Ud = 0.0f;
     #endif
+    curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
     
     /*更新误差值*/
     curent_loop_iq_pid.last_err_v = curent_loop_iq_pid.err_v;
     curent_loop_id_pid.last_err_v = curent_loop_id_pid.err_v;
 
-    curent_loop_time_stamp.time[t_index].end_t = esp_timer_get_time();/*角度值时间戳us*/
+    curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].end_t = esp_timer_get_time();/*角度值时间戳us*/
 
-    curent_loop_time_stamp.time[t_index].dt = foc_time_stamp.time[t_index].end_t - 
-                                        foc_time_stamp.time[t_index].strat_t;/*角度值时间戳us*/
+    curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].dt = 
+        curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].end_t - 
+        curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].strat_t;/*角度值时间戳us*/
+    #if 0 /*任务运行时长统计*/
+        if ( curent_loop_time_stamp.index == 20 )
+        {
+            ESP_LOGW(
+                TAG,
+                "vfoc_curt_lop_DT: %lld\r\n",
+                // "vfoc_curt_lop_DT:%lldus,%lldus,%lldus\r\n",
+                curent_loop_time_stamp.time[(curent_loop_time_stamp.index) % TIME_STAMP_SIZE].dt
+                // curent_loop_time_stamp.time[(curent_loop_time_stamp.index) % TIME_STAMP_SIZE].dt,
+                // curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].end_t,
+                // curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].strat_t
 
-    ++t_index;
-    t_index%=10;
+            );
+            curent_loop_time_stamp.index = 0;
+        }
+    #endif
 
-
-    #if 1
+    #if 0
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>1000 ) 
+        if ( (log_cnt++)>100 ) 
         {
             ESP_LOGI(
                 TAG,
-                "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f\r\n",
+                // "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f, %.2f\r\n",
+                // "iq: %.2f,%.2f,%.2f, %.2f, %.2f,%.2f\r\n",
+                "iq: %.2f,%.2f,%.2f, %.2f ,%lld\r\n",
                 curent_loop_iq_pid.exp_v,//0
                 curent_loop_iq_pid.now_v,//1
-                // park_temp.Uq,
                 curent_loop_park.Uq,//2  
+
+                (curent_loop_iq_pid.kp_out + curent_loop_iq_pid.ki_out + curent_loop_iq_pid.kd_out),
+                curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].dt
+                // park_temp.Uq,
 
                 // get_vfoc_theta_m_deg(),
                 // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
                 
-                curent_loop_id_pid.exp_v,//3
-                // park_temp.Ud,
-                curent_loop_id_pid.now_v, //4
-                curent_loop_park.Ud
+                // curent_loop_id_pid.exp_v,//3
+                // // park_temp.Ud,
+                // curent_loop_id_pid.now_v, //4
+                // curent_loop_park.Ud,
+                // get_vfoc_theta_e_w(&vfoc_m0_dt),
+                // vfoc_m0_dt.motor_drv_val.w_e
             );
 
             // ESP_LOGI(
@@ -394,7 +537,16 @@ park_parm_t vfoc_get_uqd(void)
 }
 
 /**
- * @brief 
+ * @brief 20KHZ
+ * 
+ * 位置环  << 速度环  <<  电流环
+ * 
+ * 
+位置环：100Hz
+    ↓
+速度环：500Hz~1kHz
+    ↓
+电流环：10kHz~30kHz
  * 
  * @param arg 
  */
@@ -406,22 +558,33 @@ static void foc_task(void *arg)
     int64_t angle_t_stamp = 0;/*角度值时间戳*/
     int64_t pwm_isr_t_stamp = 0;/*PWM ISR产生时间戳*/
 
-    uint16_t t_index = 0;
-
     uint32_t zero_e_cnt = 0;
     float zero_e_mech_sum = 0.0f;
+
+    float motor_exp_rpm = 0.0;
+    float iq_ref = 0.0;
+
+    uint16_t foc_task_freq_div = 0;
 
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         
-        foc_time_stamp.time[t_index].strat_t = esp_timer_get_time();/*角度值时间戳us*/
+        foc_time_stamp.time[(++foc_time_stamp.index)%TIME_STAMP_SIZE].strat_t = esp_timer_get_time();/*角度值时间戳us*/
+        #if 0
+            if ( foc_time_stamp.index == 20 )
+            {
+                ESP_LOGW(
+                    TAG,
+                    "foc_task_t:%lld,%lld,%lld us\r\n",
+                    foc_time_stamp.time[20-1].strat_t,
+                    foc_time_stamp.time[20-2].strat_t,
+                    foc_time_stamp.time[20-2].strat_t - foc_time_stamp.time[20-1].strat_t
 
-        // ESP_LOGI(
-        //     TAG,
-        //     "foc_task_start!22,%lld\r\n",
-        //     (foc_time_stamp.time[t_index].strat_t - get_motor_pwm_isr_time_stamp())
-        // );
+                );
+                foc_time_stamp.index = 0;
+            }
+        #endif
         
         curent_t_stamp = get_adc_motor_cuent_time_stamp();/*获取电流值的时间戳*/
         angle_t_stamp = get_motor_angle_time_stamp();/*获取角度值数据的时间戳*/
@@ -430,7 +593,16 @@ static void foc_task(void *arg)
         if ( get_zero_theta_e_calib_flag() )
         {/*已经进行了电角度零点对齐*/
 
-            vfoc_curent_loop();
+            /*20KHZ/20=1KHZ*/
+            if ((++foc_task_freq_div)>=20)
+            {
+                foc_task_freq_div = 0;
+                motor_exp_rpm = 10.0f;
+                iq_ref = vfoc_speed_loop(motor_exp_rpm);
+            }
+            
+            // iq_ref = 0.5f;
+            vfoc_curent_loop(iq_ref, 0.0f);
         
         }else{/*未进行电角度零点对齐*/
 
@@ -481,10 +653,26 @@ static void foc_task(void *arg)
             vfoc_get_pwm_duty().duty_Uc
         );
 
-        foc_time_stamp.time[t_index].end_t = esp_timer_get_time();/*角度值时间戳us*/
+        foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t = esp_timer_get_time();/*角度值时间戳us*/
 
-        foc_time_stamp.time[t_index].dt = foc_time_stamp.time[t_index].end_t - 
-                                          foc_time_stamp.time[t_index].strat_t;/*角度值时间戳us*/
+        foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt = 
+            foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t - 
+            foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].strat_t;/*角度值时间戳us*/
+        #if 0 /*任务运行时长统计*/
+            if ( foc_time_stamp.index == 20 )
+            {
+                ESP_LOGW(
+                    TAG,
+                    "foc_task_DT: %lld\r\n",
+                    foc_time_stamp.time[(foc_time_stamp.index) % TIME_STAMP_SIZE].dt
+                    // foc_time_stamp.time[(foc_time_stamp.index) % TIME_STAMP_SIZE].dt,
+                    // curent_loop_time_stamp.time[(curent_loop_time_stamp.index-2)%TIME_STAMP_SIZE].dt,
+                    // sped_loop_time_stamp.time[(sped_loop_time_stamp.index-3)%TIME_STAMP_SIZE].dt
+
+                );
+                foc_time_stamp.index = 0;
+            }
+        #endif
                                           
         #if 0
             // if ( (t_index==6) && ((log_cnt++)>1000) )
@@ -589,9 +777,6 @@ static void foc_task(void *arg)
             
         #endif
         
-        ++t_index;
-        t_index%=10;
-
     }
 
 }

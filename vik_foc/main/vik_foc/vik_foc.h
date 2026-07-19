@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define TIME_STAMP_SIZE     100
 
 /*更号3*/
 #define SQRT3               1.7320508075688772f
@@ -56,7 +57,7 @@ do {                                            \
 
 
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
-#define UQ_LIMIT            6.5f      // uq = 6.5, iq_max=0.559A ,iq/uq=0.086A/uq
+#define UQ_LIMIT            5.5f      // uq = 6.5, iq_max=0.559A ,iq/uq=0.086A/uq
 #define IQ_LIMIT            (UQ_LIMIT*0.086f)/*uq设置的情况下，iq最大值=0.559*/
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
@@ -244,7 +245,7 @@ typedef struct
 
 typedef struct 
 {
-    time_stamp_t time[100];
+    time_stamp_t time[TIME_STAMP_SIZE];
     uint64_t index;/*索引号*/
 
 }vfoc_time_stamp_t;

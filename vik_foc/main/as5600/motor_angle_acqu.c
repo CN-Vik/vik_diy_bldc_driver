@@ -49,11 +49,40 @@ as5600_test_conf_readback();      // 测试配置寄存器读写
 #include "esp_timer.h"
 #include "app_rtos_config.h"
 #include "vik_foc.h"
+#include "app_rtos_resource.h"
 
+
+extern void set_vfoc_theta_m_deg(float parm_angle);
+extern float get_vfoc_theta_m_deg(void);
+extern void set_vfoc_mech_w(float w_mech);
+void set_vfoc_mech_rpm(float mech_rm);
 
 
 static const char *TAG = "AS5600";
 
+typedef struct
+{
+    float angle_last;      // 上一次AS5600角度
+    float angle_total;     // 展开后的连续角度
+
+} AngleUnwrap_t;
+
+AngleUnwrap_t unwrap={0.0f};
+
+typedef struct
+{
+    float theta;       // 估计角度
+
+    float omega;       // 估计角速度 deg/s
+
+    float kp;
+
+    float ki;
+
+    float dt;
+} PLL_t;
+
+PLL_t pll;
 
 
 /* ========================== 磁铁状态字符串表 ========================== */
@@ -78,10 +107,6 @@ static const char *const s_as5600_magnet_status_str[] = {
 TaskHandle_t motor_get_angle_task_handle = NULL;
 
 
-extern void set_vfoc_theta_m_deg(float parm_angle);
-extern float get_vfoc_theta_m_deg(void);
-extern void set_vfoc_mech_w(float w_mech);
-void set_vfoc_mech_rpm(float mech_rm);
 
 
 
@@ -105,6 +130,96 @@ static i2c_master_bus_handle_t bus_handle = NULL;
 
 int64_t angle_time_stamp; /*时间戳,单位:us*/
 
+
+
+void angle_unwrap_init(AngleUnwrap_t *obj, float angle)
+{
+    obj->angle_last = angle;
+    obj->angle_total = angle;
+}
+
+
+
+float angle_unwrap_update(AngleUnwrap_t *obj, float angle)
+{
+    float delta;
+
+    delta = angle - obj->angle_last;
+
+    // 跨越0度
+    if(delta > 180.0f)
+    {
+        delta -= 360.0f;
+    }
+
+    else if(delta < -180.0f)
+    {
+        delta += 360.0f;
+    }
+
+    obj->angle_total += delta;
+
+    obj->angle_last = angle;
+
+    return obj->angle_total;
+}
+
+
+void pll_init(PLL_t *pll)
+{
+    pll->theta = 0;
+
+    pll->omega = 0;
+
+    pll->kp = 80.0f;
+
+    pll->ki = 2000.0f;
+
+    pll->dt = 0.001f;
+
+}
+
+
+
+float limit_angle_error(float error)
+{
+
+    while(error > 180)
+        error -= 360;
+
+
+    while(error < -180)
+        error += 360;
+
+
+    return error;
+}
+
+
+
+
+void pll_update(PLL_t *pll,
+                float angle_measure)
+{
+    float error;
+
+    // 角度误差
+    error =
+        angle_measure - pll->theta;
+
+    // 限制到±180
+    error =
+        limit_angle_error(error);
+
+    // PLL
+    pll->theta += 
+        pll->omega * pll->dt
+        +
+        pll->kp * error * pll->dt;
+
+    pll->omega +=
+        pll->ki * error * pll->dt;
+}
 
 
 
@@ -979,12 +1094,13 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
  */
 static inline float current_lpf(float in, float old)
 {
-    const float alpha = 0.5f;/*0.2~0.4*/
+    const float alpha = 0.45f;/*0.2~0.4*/
 
     return old + alpha * (in - old);
 }
 
 /**
+ *       1KHZ,T = 1ms
  * @brief 根据当前机械角度,计算电机,机械角速度 deg/s
  * 
  * @param now_angle 当前机械角度，单位 deg，范围一般为 0~360
@@ -1063,11 +1179,11 @@ float get_motor_w_deg_s_by_angle(float now_angle)
          * 需要调试时，建议 100ms 打印一次。
          */
         ESP_LOGI(TAG,
-                 "last_deg:%.2f, now_deg:%.2f, diff_deg:%.2f, dt_s:%.9f, omega_w:%.3f,omega_filt:%.3f",
+                 "last_deg:%.2f, now_deg:%.2f, diff_deg:%.2f, dt_s:%lldus, omega_w:%.3f,omega_filt:%.3f",
                  last_angle,
                  now_angle,
                  delta_deg,
-                 dt_s,
+                 (dt_us),
                  omega_raw,
                  omega_filt
         );
@@ -1119,7 +1235,8 @@ float get_motor_rpm_by_angle(float w_mech)
          */
         ESP_LOGI(
             TAG,
-            "mech_rpm:%.3f",
+            "w_mech: %.2f,%.3f\r\n",
+            w_mech,
             rpm_raw
         );
     }
@@ -1135,11 +1252,13 @@ float get_motor_rpm_by_angle(float w_mech)
 static void motor_get_angle_task(void *arg)
 {
     float angle = 0.0f;
-    float rpm = 0.0f;
+    float m0_mech_rpm = 0.0f;
 
     static int log_cnt = 0;
     int64_t angle_time_stamp_start = 0; /*时间戳,单位:us*/
     int64_t angle_time_stamp_end = 0; /*时间戳,单位:us*/
+
+    float angle_cont;
 
     while (1)
     {
@@ -1148,24 +1267,54 @@ static void motor_get_angle_task(void *arg)
         angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
         if (!motor_encoder_get_angle(&angle))
         {
+
+            /*角度值不能滤波，原本就落后于FOC PWM周期，再滤波更落后 */
+            // angle = current_lpf(angle, get_vfoc_theta_m_deg()); 
             /*
              * 设置 VFOC 的机械角度
              */
             set_vfoc_theta_m_deg(angle);
 
-            set_vfoc_mech_w( get_motor_w_deg_s_by_angle(angle) );/*计算设置，机械角速度*/
+            //展开角度
+            angle_cont = angle_unwrap_update(
+                &unwrap,
+                angle
+            );
 
-            set_vfoc_mech_rpm( get_motor_rpm_by_angle(get_vfoc_mech_w()) );/*计算转速*/
+            //PLL估计速度
+            pll_update(
+                &pll,
+                angle_cont
+            );
 
-            calc_vfoc_theta_e_w(&vfoc_m0_dt);/*计算 电角度转速*/
+            m0_mech_rpm = (pll.omega/(6.0f));
+            // set_vfoc_mech_w( get_motor_w_deg_s_by_angle(angle) );/*计算设置，机械角速度*/
+            set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
+            // ========== 队列发送核心代码 ==========
+            // 队列深度10，满了直接丢弃本次转速，不阻塞任务
+            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
+            // if(xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0) != pdPASS)
+            // {
+            //     // 队列已满，数据丢弃，可打印提示（调试用）
+            //     ESP_LOGW(
+            //         TAG,
+            //         "g_motor0_mech_rpm_queue send fialed!,remi:%d,use:%d\r\n",
+            //         uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+            //         uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+            //     );
+            // }
+
+            // set_vfoc_mech_rpm( get_motor_rpm_by_angle(get_vfoc_mech_w()) );/*计算转速*/
+
+            // calc_vfoc_theta_e_w(&vfoc_m0_dt);/*计算 电角度转速*/
             
-            angle_time_stamp = esp_timer_get_time();/*加入时间戳*/
+            // angle_time_stamp = esp_timer_get_time();/*加入时间戳*/
             
-            /*获取机械转速*/
-            rpm = get_vfoc_mech_rpm();
+            // /*获取机械转速*/
+            // rpm = get_vfoc_mech_rpm();
 
-            /*计算读取，计算一下角度速度值，耗时时间*/
-            angle_time_stamp_end = esp_timer_get_time();
+            // /*计算读取，计算一下角度速度值，耗时时间*/
+            // angle_time_stamp_end = esp_timer_get_time();
             
             #if 0
                 /*
@@ -1483,6 +1632,9 @@ void motor_encoder_init(void)
 
     motor_encoder_get_angle(&l_temp_angle);
     ESP_LOGE(TAG, "motor_encoder_angle_deg:%.2f\r\n",l_temp_angle);
+
+    angle_unwrap_init(&unwrap,0.0f);
+    pll_init(&pll);
 
     xTaskCreatePinnedToCore(
         motor_get_angle_task, // 任务函数

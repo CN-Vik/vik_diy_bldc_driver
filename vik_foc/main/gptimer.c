@@ -277,7 +277,7 @@ void gptimer_creat_main(void)
      */
     gptimer_alarm_config_t alarm_config2 = {
         .reload_count = 0,
-        .alarm_count = GPTIMER_MS(1), // 周期 = 100*(1000us) = 100ms
+        .alarm_count = GPTIMER_MS(1), // 周期 = 1ms
         .flags.auto_reload_on_alarm = true,
     };
 
