@@ -1412,7 +1412,7 @@ void vfoc_init(foc_data_t *vfoc_dt)
         vfoc_dt->motor_par.theta_m = 0.0f;
         vfoc_dt->motor_par.theta_e = 0.0f;
         vfoc_dt->motor_par.pole_pairs = 7;
-        vfoc_dt->motor_par.KV = 100;/*100RPM/V*/
+        vfoc_dt->motor_par.KV = MOTOR_KV;/*100RPM/V*/
         vfoc_dt->motor_par.Phase_Rs = 8.25f;/*相电阻8.25欧姆*/
         vfoc_dt->motor_par.Phase_Ls = 0.00425f;/*相电感 4.25mH*/
         vfoc_dt->motor_par.Ld = 0.00425f;/*D轴电感 4.25mH*/

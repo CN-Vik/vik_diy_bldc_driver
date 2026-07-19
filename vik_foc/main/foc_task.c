@@ -65,6 +65,7 @@ TEZ ------------------------------------ TEZ
 #include "esp_timer.h"
 #include "vik_foc.h"
 #include "vik_foc_pid.h"
+#include "esp_task_wdt.h"
 
 
 const static char *TAG = "FOC_TASK";
@@ -245,18 +246,19 @@ float vfoc_speed_loop(float exp_sped_rpm)
     #endif
 
     
-    #if 1
+    #if 0
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>100 ) 
         {
             log_cnt = 0;
             ESP_LOGI(
                 TAG,
-                "vfoc_sped: %.2f,%.2f,%.2f,%.2f\r\n",
+                "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f \r\n",
                 speed_loop_pid.exp_v,
                 speed_loop_pid.now_v,
                 speed_loop_pid.pid_out,/*iqref*/
-                curent_loop_iq_pid.now_v/*iq*/
+                curent_loop_iq_pid.now_v/*iq*/,
+                curent_loop_park.Uq
                 
             );
 
@@ -336,8 +338,8 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     curent_loop_iq_pid.ki = 25918.0f;/*ki = R*2pi*fc，fc:电流环频率500HZ*/
     curent_loop_iq_pid.kd = 0.0f;
 
-    curent_loop_iq_pid.ki_integral_min = -0.00025f;/* Uqmax/Ki */
-    curent_loop_iq_pid.ki_integral_max = +0.00025f;
+    curent_loop_iq_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;/* Uqmax/Ki */
+    curent_loop_iq_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
 
     /*PID输出结果限幅*/
     curent_loop_iq_pid.pid_out_max = +UQ_LIMIT;
@@ -361,7 +363,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
 
     /*id pid 参数,纯PI控制器，kd=0 */
     curent_loop_id_pid.kp = 13.35f;
-    curent_loop_id_pid.ki = 0.0f;
+    curent_loop_id_pid.ki = 25918.0f;
     curent_loop_id_pid.kd = 0.0f;
 
     curent_loop_id_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
@@ -373,10 +375,12 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     /* FOC电流环_Id_PI控制 */
     vfoc_pid_calt(&curent_loop_id_pid);
 /*---------------------FOC-id-PI-控制---------------------------*/
-    #if 0
+    #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
         // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
+        curent_loop_park.Ud = 0.0f;
+
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
         // curent_loop_park.Uq = UQ_LIMIT;
@@ -411,21 +415,20 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
         }
     #endif
 
-    #if 0
+    #if 1
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>100 ) 
+        if ( (log_cnt++)>1000 ) 
         {
             ESP_LOGI(
                 TAG,
                 // "iq: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f, %.2f\r\n",
                 // "iq: %.2f,%.2f,%.2f, %.2f, %.2f,%.2f\r\n",
-                "iq: %.2f,%.2f,%.2f, %.2f ,%lld\r\n",
+                "iq: %.2f,%.2f,%.2f, %.2f\r\n",
                 curent_loop_iq_pid.exp_v,//0
                 curent_loop_iq_pid.now_v,//1
                 curent_loop_park.Uq,//2  
 
-                (curent_loop_iq_pid.kp_out + curent_loop_iq_pid.ki_out + curent_loop_iq_pid.kd_out),
-                curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%TIME_STAMP_SIZE].dt
+                (curent_loop_iq_pid.kp_out + curent_loop_iq_pid.ki_out + curent_loop_iq_pid.kd_out)
                 // park_temp.Uq,
 
                 // get_vfoc_theta_m_deg(),
@@ -594,14 +597,14 @@ static void foc_task(void *arg)
         {/*已经进行了电角度零点对齐*/
 
             /*20KHZ/20=1KHZ*/
-            if ((++foc_task_freq_div)>=20)
-            {
-                foc_task_freq_div = 0;
-                motor_exp_rpm = 10.0f;
-                iq_ref = vfoc_speed_loop(motor_exp_rpm);
-            }
+            // if ((++foc_task_freq_div)>=20)
+            // {
+            //     foc_task_freq_div = 0;
+            //     motor_exp_rpm = 10.0f;
+            //     iq_ref = vfoc_speed_loop(motor_exp_rpm);
+            // }
             
-            // iq_ref = 0.5f;
+            iq_ref = 0.3f;
             vfoc_curent_loop(iq_ref, 0.0f);
         
         }else{/*未进行电角度零点对齐*/
@@ -813,7 +816,7 @@ void foc_task_creat(void)
         NULL,                       /* 任务入参：不需要传递参数，填 NULL */
         FOC_TASK_PRIO,   /* 任务优先级：20级（最高优先级，保证电机控制实时性） */
         &foc_task_handle,      /* 任务句柄：输出参数，保存创建的任务句柄，用于后续任务管理 */
-        FOC_TASK_RUN_CORE    /* 绑定CPU核心：指定任务**只运行在 CPU 1** 上 */
+        FOC_TASK_RUN_CORE    /* 绑定CPU核心：指定任务**只运行在 CPU 0** 上 */
     );
     if ( foc_task_handle==NULL )
     {

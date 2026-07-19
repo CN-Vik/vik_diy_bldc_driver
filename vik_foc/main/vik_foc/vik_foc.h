@@ -61,8 +61,9 @@ do {                                            \
 #define IQ_LIMIT            (UQ_LIMIT*0.086f)/*uq设置的情况下，iq最大值=0.559*/
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
+#define MOTOR_KV            100 /*100 RPM/V*/
 
-#define CURENT_I_OUT_LIMIT      (UQ_LIMIT*0.5f)
+#define CURENT_I_OUT_LIMIT      (0.00025f) /*Uqmax/Ki*/
 #define SPEED_PID_OUT_LIMIT     (IQ_LIMIT)/*速度PID输出限幅*/
 #define SPEED_I_OUT_LIMIT       (IQ_LIMIT*0.5)/*速度PID积分限幅*/
 // #define MOTOR0_UQ_DIR   (-1.0f)

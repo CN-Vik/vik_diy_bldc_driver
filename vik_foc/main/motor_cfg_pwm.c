@@ -42,7 +42,7 @@ static const char *TAG = "MOTOR_CFG_PWM";
     平衡车建议(10~20KHZ)
  * 新手先设置10kHz PWM 载波。
  */
-#define M0_PWM_FREQ_HZ             (20 *(1000))
+#define M0_PWM_FREQ_HZ             (15 *(1000))
 
 /*
  * MCPWM 分辨率 10MHz。
@@ -160,7 +160,7 @@ static bool IRAM_ATTR mcpwm_timer_isr ( mcpwm_timer_handle_t timer,
             foc_task_handle,
             &hp
         );
-        pwm_time_stamp = esp_timer_get_time();
+        // pwm_time_stamp = esp_timer_get_time();
     // }
 
     return hp == pdTRUE;
