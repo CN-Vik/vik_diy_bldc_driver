@@ -225,14 +225,14 @@ float vfoc_speed_loop(float exp_sped_rpm)
             uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
         );
     }
-
+    if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
     /*获取当前转速实际值*/
     speed_loop_pid.now_v = m0_mch_rpm;
 
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
-    speed_loop_pid.kp = 50.5f;
+    speed_loop_pid.kp = 0.001f;
     speed_loop_pid.ki = 0.00f;
     speed_loop_pid.kd = 0.0f;
 
@@ -266,9 +266,9 @@ float vfoc_speed_loop(float exp_sped_rpm)
     #endif
 
     
-    #if 0
+    #if 1
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>10 ) 
+        if ( (log_cnt++)>100 ) 
         {
             log_cnt = 0;
             ESP_LOGI(
@@ -277,7 +277,7 @@ float vfoc_speed_loop(float exp_sped_rpm)
                 speed_loop_pid.exp_v,
                 speed_loop_pid.now_v,
                 speed_loop_pid.pid_out,/*iqref*/
-                curent_loop_iq_pid.now_v/*iq*/,
+                curent_loop_iq_pid.now_v,/*iq*/
                 // curent_loop_park.Uq
                 vfoc_get_uqd().Uq
                 
