@@ -165,15 +165,15 @@ float angle_unwrap_update(AngleUnwrap_t *obj, float angle)
 }
 
 
-void pll_init(PLL_t *pll)
+void pll_init(PLL_t *pll,float theta)
 {
-    pll->theta = 0;
+    pll->theta = theta;
 
     pll->omega = 0;
 
-    pll->kp = 80.0f;
+    pll->kp = 30.0f;
 
-    pll->ki = 2000.0f;
+    pll->ki = 500.0f;
 
     pll->dt = 0.001f;
 
@@ -198,27 +198,30 @@ float limit_angle_error(float error)
 
 
 
-void pll_update(PLL_t *pll,
-                float angle_measure)
+void pll_update(
+    PLL_t *pll,
+    float angle_measure
+)
 {
+
     float error;
 
-    // 角度误差
     error =
         angle_measure - pll->theta;
 
-    // 限制到±180
-    error =
-        limit_angle_error(error);
-
-    // PLL
-    pll->theta += 
-        pll->omega * pll->dt
-        +
-        pll->kp * error * pll->dt;
-
     pll->omega +=
-        pll->ki * error * pll->dt;
+        pll->ki *
+        error *
+        pll->dt;
+
+    pll->theta +=
+        pll->omega *
+        pll->dt
+        +
+        pll->kp *
+        error *
+        pll->dt;
+
 }
 
 
@@ -1289,10 +1292,10 @@ static void motor_get_angle_task(void *arg)
 
             m0_mech_rpm = (pll.omega/(6.0f));
             // set_vfoc_mech_w( get_motor_w_deg_s_by_angle(angle) );/*计算设置，机械角速度*/
-            set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
+            // set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
             // ========== 队列发送核心代码 ==========
             // 队列深度10，满了直接丢弃本次转速，不阻塞任务
-            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
+            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 10);
             // if(xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0) != pdPASS)
             // {
             //     // 队列已满，数据丢弃，可打印提示（调试用）
@@ -1326,24 +1329,26 @@ static void motor_get_angle_task(void *arg)
                 {
                     log_cnt = 0;
 
+                    ESP_LOGI(TAG,
+                    //     "motor_angle: %.2f\r\n",
+                    //     m0_mech_rpm
+                    // );
+                        "raw %.2f cont %.2f theta %.2f omega %.2f\n",
+                        angle,
+                        angle_cont,
+                        pll.theta,
+                        pll.omega
+                    );
                     // ESP_LOGI(TAG,
-                    //     "motor_angle: %.2f, %.2f, %.2f, %lld, %lld\r\n",
+                    //     "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f,task_T:%lldus,w_mech:%.2f,w_e%.2f\r\n",
                     //     angle,
                     //     get_vfoc_theta_m_deg(),
-                    //     get_vfoc_mech_rpm(),
-                    //     angle_time_stamp,
-                    //     (angle_time_stamp_end - angle_time_stamp_start)
-                    // );
-                    ESP_LOGI(TAG,
-                        "motor_angle = %.2f deg, theta_m_deg = %.2f, rpm = %.2f,task_T:%lldus,w_mech:%.2f,w_e%.2f\r\n",
-                        angle,
-                        get_vfoc_theta_m_deg(),
-                        rpm,
-                        (angle_time_stamp_end - angle_time_stamp_start),
-                        get_vfoc_mech_w(),
-                        get_vfoc_theta_e_w(&vfoc_m0_dt)
+                    //     rpm,
+                    //     (angle_time_stamp_end - angle_time_stamp_start),
+                    //     get_vfoc_mech_w(),
+                    //     get_vfoc_theta_e_w(&vfoc_m0_dt)
 
-                    );
+                    // );
 
 
                 }
@@ -1634,7 +1639,7 @@ void motor_encoder_init(void)
     ESP_LOGE(TAG, "motor_encoder_angle_deg:%.2f\r\n",l_temp_angle);
 
     angle_unwrap_init(&unwrap,0.0f);
-    pll_init(&pll);
+    pll_init(&pll,l_temp_angle);
 
     xTaskCreatePinnedToCore(
         motor_get_angle_task, // 任务函数
