@@ -973,6 +973,8 @@ void vfoc_set_svpwm(float uq,
     /*获取电角度弧度制*/
     // vfoc_m0_dt.motor_par.theta_e = get_vfoc_theta_e_rad();
 
+    get_vfoc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
+
     /*
      * 3. 逆 Park：
      *      输入Ud/Uq + theta_e，输出Ualpha/Ubeta

@@ -786,7 +786,6 @@ static void foc_task(void *arg)
                 // iq_ref = 0.3f;
                 vfoc_curent_loop(iq_ref, -0.5f);
             #else
-                get_vfoc_theta_e_rad(get_vfoc_theta_m_deg());
                 vfoc_speed_loop(motor_exp_rpm);
             #endif
 
