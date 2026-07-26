@@ -68,5 +68,6 @@ idf_component_register(
                   esp_timer
                   esp_driver_i2c  
                   esp_adc 
+                  nvs_flash
                    
 )

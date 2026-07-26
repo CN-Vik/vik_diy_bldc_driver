@@ -66,6 +66,7 @@ TEZ ------------------------------------ TEZ
 #include "vik_foc.h"
 #include "vik_foc_pid.h"
 #include "esp_task_wdt.h"
+#include "esp32_flas_nvs.h"
 
 
 const static char *TAG = "FOC_TASK";
@@ -235,7 +236,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
-    speed_loop_pid.kp = 0.007f;
+    speed_loop_pid.kp = 0.8f;
     speed_loop_pid.ki = 0.0f;
     speed_loop_pid.kd = 0.0f;
 
@@ -249,7 +250,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
     speed_loop_pid.last_err_v = speed_loop_pid.err_v;
 
-    #if 1
+    #if 0
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
         // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Uq = speed_loop_pid.pid_out;
@@ -258,7 +259,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
         // curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Uq = 0.5f;
+        curent_loop_park.Uq = 4.5f;
         curent_loop_park.Ud = 0.0f;
     #endif
     curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
@@ -290,7 +291,6 @@ void vfoc_speed_loop(float exp_sped_rpm)
             log_cnt = 0;
             ESP_LOGI(
                 TAG,
-                // "vfoc_sped: %.2f,%.2f ,%.2f,%.2f, ,%.2f,%.2f, %.2f \r\n",
                 "vfoc_sped: %.2f,%.2f ,%.2f,%.2f ,%.2f,%.2f\r\n",
                 speed_loop_pid.exp_v,
                 speed_loop_pid.now_v,
@@ -298,11 +298,8 @@ void vfoc_speed_loop(float exp_sped_rpm)
                 speed_loop_pid.err_v,
                 speed_loop_pid.kp_out,
 
-                speed_loop_pid.pid_out,/*iqref*/
+                speed_loop_pid.pid_out,/*speed_pid_out*/
                 curent_loop_park.Uq
-                // curent_loop_iq_pid.now_v,/*iq*/
-                // curent_loop_park.Uq
-                // vfoc_get_uqd().Uq
                 
             );
 
@@ -743,6 +740,7 @@ static void foc_task(void *arg)
     int64_t pwm_isr_t_stamp = 0;/*PWM ISR产生时间戳*/
 
     uint32_t zero_e_cnt = 0;
+    uint32_t sample_cnt = 0;
     float zero_e_mech_sum = 0.0f;
 
     float motor_exp_rpm = 0.0;
@@ -777,11 +775,11 @@ static void foc_task(void *arg)
 
         #endif
 
-        if ( 1 )
-        // if ( get_zero_theta_e_calib_flag() )
+        // if ( 1 )
+        if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
         {/*已经进行了电角度零点对齐*/
 
-            motor_exp_rpm = 800.0f;
+            motor_exp_rpm = 400.0f;
 
             #if (VFOC_CURENT_LOOP_EN == 1)
                 iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
@@ -796,26 +794,43 @@ static void foc_task(void *arg)
         }else{/*未进行电角度零点对齐*/
 
             curent_loop_park.Uq = 0.0f;
-            curent_loop_park.Ud = 4.5f;
+            curent_loop_park.Ud = 5.5f;
 
             ++zero_e_cnt;
-            zero_e_mech_sum += get_vfoc_theta_m_deg();
-            if ( zero_e_cnt >=(20*3000) )/*50us一个周期，20次=1ms,需要100ms*/
+            if ( zero_e_cnt >=(20*5000) )/*50us一个周期，20次=1ms,需要100ms*/
             {
+                ++sample_cnt;
+                zero_e_mech_sum += get_vfoc_theta_m_deg();
                 // 显式强清零，确保 SVPWM 此时注入的电压向量在绝对的物理 0 度
                 set_vfoc_theta_e_rad(0.0f);
                 /*设置零电角度时候的，机械角度偏移值*/
-                set_theta_e_offset_mech( zero_e_mech_sum / zero_e_cnt );
-                set_zero_theta_e_calib_flag(true);
-                zero_e_cnt = 0;
+                set_theta_e_offset_mech( zero_e_mech_sum / sample_cnt );
+                
+                if (sample_cnt>=50)
+                {
+                    ESP_LOGI(
+                        TAG,
+                        "zero_e_mech:%.2f,theta_e(rad/s):%.2f, flag:%d\r\n",
+                        balance_vehicle_car.m0_mech_ofset,
+                        get_vfoc_theta_e_rad(get_theta_e_offset_mech()),
+                        balance_vehicle_car.m0_zero_theta_e_calib_flag
+                    );
 
-                ESP_LOGI(
-                    TAG,
-                    "zero_e_mech:%.2f,theta_e(rad/s):%.2f \r\n",
-                    get_theta_e_offset_mech(),
-                    get_vfoc_theta_e_rad(get_theta_e_offset_mech())
-                );
+                    balance_vehicle_car.m0_mech_ofset = get_theta_e_offset_mech(); 
+                    balance_vehicle_car.m0_zero_theta_e_calib_flag = 1;
 
+                    // 保存到flash配置
+                    esp_err_t ret;
+                    ret = cfg_saveto_flash(&balance_vehicle_car);
+
+                    ESP_LOGI(
+                        TAG,
+                        "save_NVS_result:%s \r\n",
+                        esp_err_to_name(ret)
+                    );
+
+                    zero_e_cnt = 0;/*退出采样*/
+                }
             }
             
         }
@@ -1039,5 +1054,26 @@ void foc_task_creat(void)
      * 配置PWM。
      */
     esp32_mcpwm_init();
+
+
+    // 读取flash参数
+    esp_err_t err = cfg_readfrom_flash(&balance_vehicle_car);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG,
+                "read_NVS_failed: %s (0x%x)",
+                esp_err_to_name(err),
+                err
+        );
+    }
+    else
+    {
+        ESP_LOGI(TAG,"flash_read_m0_mech_offset_ok = %.3f,flag:%d,theta:%.4f\r\n",
+            balance_vehicle_car.m0_mech_ofset,
+            balance_vehicle_car.m0_zero_theta_e_calib_flag,
+            get_vfoc_theta_e_rad(balance_vehicle_car.m0_mech_ofset)
+                    
+        );
+    }
 }
 

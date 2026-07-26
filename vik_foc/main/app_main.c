@@ -28,6 +28,8 @@
 #include "motor_angle_acqu.h"
 #include "foc_task.h"
 
+#include "nvs_flash.h"
+#include "nvs.h"
 
 static const char *TAG = "vik_foc_example_main";
 
@@ -37,6 +39,17 @@ extern void gptimer_creat_main(void);
 void app_main(void)
 {
     ESP_LOGI(TAG, "Hello FOC float version");
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        // 分区异常，先擦除整个nvs分区
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        // ⭐擦除完成【必须重新初始化】
+        err = nvs_flash_init();
+        ESP_LOGI(TAG, "NVS_FLASH_Erase_All_data! \r\n");
+    }
+    ESP_ERROR_CHECK(err);
 
     /*1.rtos系统资源初始化*/
     app_rtos_resource_init();
