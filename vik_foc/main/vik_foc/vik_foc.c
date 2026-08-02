@@ -999,6 +999,31 @@ void vfoc_set_svpwm(float uq,
                                              &vfoc_m0_dt.motor_drv_val.pwm_duty_val
     );
 
+    
+    #if 0
+        static uint32_t log_cnt = 0; 
+        if ( (log_cnt++)>100 ) 
+        {
+            ESP_LOGI(
+                TAG,
+                "vfoc_svpwm: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f,%.2f,%.2f \r\n",
+                vfoc_m0_dt.park_val.Uq,
+                l_temp_clark_v.I_alpha,
+                l_temp_clark_v.I_beta,
+
+                vfoc_m0_dt.motor_drv_val.Ua,
+                vfoc_m0_dt.motor_drv_val.Ub,
+                vfoc_m0_dt.motor_drv_val.Uc,
+
+                vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ua,
+                vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ub,
+                vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Uc
+                
+            );
+            
+            log_cnt = 0;
+        }
+    #endif
     /*
      * 量产代码里，不建议 1ms 打一次日志。
      * 这里只在异常时打。
@@ -1068,6 +1093,9 @@ void vfoc_set_spwm( float uq,
      */
     vfoc_m0_dt.park_val.Uq = uq;
     vfoc_m0_dt.park_val.Ud = ud;
+
+    get_vfoc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
+
 
     /*
      * 3. Park逆变换：Id/Iq -> Ualpha/Ubeta

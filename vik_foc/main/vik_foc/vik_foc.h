@@ -57,7 +57,7 @@ do {                                            \
 
 
 /**Uq_max ≈ 12 / 1.732 ≈ 6.9V */
-#define UQ_LIMIT            5.5f      // uq = 6.5, iq_max=0.559A ,iq/uq=0.086A/uq
+#define UQ_LIMIT            6.5f      // uq = 6.5, iq_max=0.559A ,iq/uq=0.086A/uq
 #define IQ_LIMIT            (UQ_LIMIT*0.086f)/*uq设置的情况下，iq最大值=0.559*/
 #define POS_DEADBAND_DEG    0.5f      // 小误差死区
 #define SPEED_DEADBAND_RPM  3.0f
@@ -66,14 +66,14 @@ do {                                            \
 #define CURENT_I_OUT_LIMIT      (0.00025f) /*Uqmax/Ki*/
 #define SPEED_PID_OUT_LIMIT     (IQ_LIMIT)/*速度PID输出限幅*/
 #define SPEED_I_OUT_LIMIT       (IQ_LIMIT*0.5)/*速度PID积分限幅*/
-// #define MOTOR0_UQ_DIR   (-1.0f)
+#define MOTOR0_UQ_DIR           (-1.0f)
 
 
 /*
  * Uq输出方向修正：
  * 用来让 Uq_cmd 对应你想要的电机机械方向。
  */
-#define MOTOR0_UQ_DIR          (1.0f)
+#define MOTOR0_UQ_DIR          (-1.0f)
 
 /*
  * 正转对应的Iq方向：

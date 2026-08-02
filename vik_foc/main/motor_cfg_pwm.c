@@ -102,17 +102,41 @@ esp_err_t motor_set_pwm_duty(float duty_u, float duty_v, float duty_w)
         return ESP_ERR_INVALID_STATE;
     }
 
+    #if 0
+        static uint32_t cnt = 0;
+
+        if ((cnt++)>=50)
+        {
+            cnt = 0;
+            ESP_LOGI(
+                TAG,
+                "[motor_set_pwm_duty]: %.3f, %.3f, %.3f\r\n",
+                duty_u,
+                duty_v,
+                duty_w
+            );
+        }
+    #endif
+
     cmp_u = m0_duty_to_compare(duty_u);
     cmp_v = m0_duty_to_compare(duty_v);
     cmp_w = m0_duty_to_compare(duty_w);
 
-    // ESP_LOGI(
-    //     TAG,
-    //     "[motor_set_pwm_duty]:cmp_u:%lu,cmp_v:%lu,cmp_w:%lu \r\n",
-    //     cmp_u,
-    //     cmp_v,
-    //     cmp_w
-    // );
+    #if 0
+        static uint32_t cnt = 0;
+
+        if ((cnt++)>=50)
+        {
+            cnt = 0;
+            ESP_LOGI(
+                TAG,
+                "[motor_set_pwm_duty]: %lu, %lu, %lu\r\n",
+                cmp_u,
+                cmp_v,
+                cmp_w
+            );
+        }
+    #endif
     mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[0], cmp_u);
     mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[1], cmp_v);
     mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[2], cmp_w);

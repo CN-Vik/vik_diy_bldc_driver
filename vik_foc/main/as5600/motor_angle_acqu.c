@@ -1267,7 +1267,8 @@ static void motor_get_angle_task(void *arg)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
+        // angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
+
         if (!motor_encoder_get_angle(&angle))
         {
 
@@ -1295,7 +1296,7 @@ static void motor_get_angle_task(void *arg)
             // set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
             // ========== 队列发送核心代码 ==========
             // 队列深度10，满了直接丢弃本次转速，不阻塞任务
-            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 10);
+            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
             // if(xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0) != pdPASS)
             // {
             //     // 队列已满，数据丢弃，可打印提示（调试用）
@@ -1316,9 +1317,6 @@ static void motor_get_angle_task(void *arg)
             // /*获取机械转速*/
             // rpm = get_vfoc_mech_rpm();
 
-            // /*计算读取，计算一下角度速度值，耗时时间*/
-            // angle_time_stamp_end = esp_timer_get_time();
-            
             #if 0
                 /*
                 * 低频打印，比如 100 次打印一次
@@ -1359,6 +1357,14 @@ static void motor_get_angle_task(void *arg)
             ESP_LOGE(TAG, "motor_encoder_get_angle_failed!");
         }
 
+        // /*计算读取，计算一下角度速度值，耗时时间*/
+        // angle_time_stamp_end = esp_timer_get_time();
+        
+        // ESP_LOGI(TAG,
+        //     "%lld\r\n",
+        //     (angle_time_stamp_end - angle_time_stamp_start)
+
+        // );
     }
 }
 
