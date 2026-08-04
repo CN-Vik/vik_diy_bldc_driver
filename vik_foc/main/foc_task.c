@@ -212,7 +212,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
     park_temp = park_tansform(
         clark_temp.I_alpha,
         clark_temp.I_beta,
-        -get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+        get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
         // 0.0f
     );
 
@@ -282,7 +282,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
         // curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Uq = -3.0f;
+        curent_loop_park.Uq = -6.0f;
         curent_loop_park.Ud = 0.0f;
     #endif
     curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
@@ -326,15 +326,20 @@ void vfoc_speed_loop(float exp_sped_rpm)
             //     park_temp.iq
                 
             // );
-
+            // set_theta_e_offset_mech(get_theta_e_offset_mech()+10.0f);
             ESP_LOGI(
                 
                 TAG,
-                "vfoc_sped: %.2f,%.2f,%.2f,%.2f\r\n",
+                "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f,  %.2f,%.2f\r\n",
                 get_vfoc_theta_m_deg(),
                 get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                // get_theta_e_offset_mech(),
+                balance_vehicle_car.m0_e_ofset_rad,
                 m0_mch_rpm,
-                curent_loop_park.Uq
+                curent_loop_park.Uq,
+
+                park_temp.iq,
+                park_temp.id
                 
             );
 
@@ -753,6 +758,96 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
 #endif
 
 
+
+
+
+
+/**
+ * @brief 校准专用：设置指定 Alpha/Beta 电压并更新硬件 PWM
+ * 
+ * @param u_alpha Alpha 轴电压 (V)
+ * @param u_beta  Beta 轴电压 (V)
+ */
+static void align_set_voltage_ab(float u_alpha, float u_beta)
+{
+    clark_parm_t l_temp_clark_v = {0};
+    vfoc_status_e_t svpwm_status;
+
+    /* 1. 填充电压值到你的 clark 变量结构体中 */
+    l_temp_clark_v.I_alpha = u_alpha;
+    l_temp_clark_v.I_beta  = u_beta;
+
+    /* 2. 反 Clark 变换 (仅供 Ua/Ub/Uc 调试打印用) */
+    vfoc_m0_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
+
+    /* 3. 计算 SVPWM 占空比 */
+    svpwm_status = vfoc_svpwm_calc_duty_uab( 
+        &l_temp_clark_v,
+        MOTOR_DRV_VBUS,
+        &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+    );
+
+    /* 4. 异常检测 */
+    if ((svpwm_status != VFOC_STATUS_OK) && (svpwm_status != VFOC_STATUS_SATURATED))
+    {
+        ESP_LOGE(TAG, "SVPWM error, status=%d", (int)svpwm_status);
+    }
+
+
+    /*设置PWM占空比*/
+    motor_set_pwm_duty(
+        vfoc_get_pwm_duty().duty_Ua,
+        vfoc_get_pwm_duty().duty_Ub,
+        vfoc_get_pwm_duty().duty_Uc
+    );
+
+}
+
+
+
+/**
+ * @brief 校准 M0 电角度 Offset
+ * 
+ * @return float 校准出的 Offset 弧度 [0, 2π)
+ */
+float vfoc_calibrate_m0_offset(void)
+{   
+    uint16_t pole_pairs = vfoc_m0_dt.motor_par.pole_pairs; // 7 极对数
+    float mech_theta_deg = 0.0f;
+
+    ESP_LOGI(TAG, "===开始_M0_电角度双向零偏校准===\r\n");
+
+    // =======================================================
+    // Step 1: 0° 电角度定位 (Ualpha = +ALIGN_VOLTAGE, Ubeta = 0)
+    // =======================================================
+    set_vfoc_theta_e_rad(0.0f);// 设置电角度为 0
+    align_set_voltage_ab(+0.5f, 0.0f); 
+    
+    vTaskDelay(pdMS_TO_TICKS(2000));   
+
+    motor_encoder_get_angle(&mech_theta_deg);/*获取最新的机械角度*/
+
+    float theta_e_rad_ofset = (FOC_DEG_TO_RAD(mech_theta_deg)*pole_pairs);
+
+    theta_e_rad_ofset = electricalAngleWrap(theta_e_rad_ofset);/*归一化电角度*/
+
+    align_set_voltage_ab(0.0f, 0.0f);/*安全切断电机电压输出*/
+
+    
+    /* 更新到你的平衡车全局结构体 */
+    balance_vehicle_car.m0_e_ofset_rad = -theta_e_rad_ofset;
+    balance_vehicle_car.m0_zero_theta_e_calib_flag = 1;
+    // 保存flash配置
+    cfg_saveto_flash(&balance_vehicle_car);
+
+    ESP_LOGI(TAG, "=== 校准成功! M0_e_Ofset: %.4f rad (%.2f°) ===\r\n", 
+        balance_vehicle_car.m0_e_ofset_rad, mech_theta_deg
+    );
+
+    return -theta_e_rad_ofset;
+}
+
+
 /**
  * @brief 20KHZ
  * 
@@ -811,7 +906,7 @@ static void foc_task(void *arg)
 
         #endif
 
-        // if ( 1 )
+        // if ( 0 )
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
         {/*已经进行了电角度零点对齐*/
 
@@ -825,68 +920,34 @@ static void foc_task(void *arg)
                 vfoc_speed_loop(motor_exp_rpm);
             #endif
 
+            #ifdef USE_FOC_SPWM
+                /*设置Uq,Ud*/
+                vfoc_set_spwm(
+                    vfoc_get_uqd().Uq,
+                    vfoc_get_uqd().Ud,
+                    MOTOR_DRV_VBUS
+                );
+            #elif defined(USE_FOC_SVPWM)
+                /*设置Uq,Ud*/
+                vfoc_set_svpwm(
+                    vfoc_get_uqd().Uq,
+                    vfoc_get_uqd().Ud,
+                    MOTOR_DRV_VBUS
+                );
+            #endif
+
         
         }else{/*未进行电角度零点对齐*/
 
-            curent_loop_park.Uq = 0.0f;
-            curent_loop_park.Ud = 5.5f;
+            ESP_LOGW(
+                TAG,
+                "zero_theta_e_calib_failed! (%d)\r\n",
+                balance_vehicle_car.m0_zero_theta_e_calib_flag
+            );
 
-            ++zero_e_cnt;
-            if ( zero_e_cnt >=(20*5000) )/*50us一个周期，20次=1ms,5000ms*/
-            {
-                ++sample_cnt;
-                zero_e_mech_sum += get_vfoc_theta_m_deg();
-                // 显式强清零，确保 SVPWM 此时注入的电压向量在绝对的物理 0 度
-                set_vfoc_theta_e_rad(0.0f);
-                /*设置零电角度时候的，机械角度偏移值*/
-                set_theta_e_offset_mech( (zero_e_mech_sum / sample_cnt)+0.0f );
-                
-                if (sample_cnt>=50)
-                {
-                    balance_vehicle_car.m0_mech_ofset = get_theta_e_offset_mech(); 
-                    balance_vehicle_car.m0_zero_theta_e_calib_flag = 1;
-
-                    // 保存到flash配置
-                    esp_err_t ret;
-                    ret = cfg_saveto_flash(&balance_vehicle_car);
-
-
-                    ESP_LOGI(
-                        TAG,
-                        "zero_e_mech:%.2f,theta_e(rad/s):%.2f, flag:%d\r\n",
-                        balance_vehicle_car.m0_mech_ofset,
-                        get_vfoc_theta_e_rad(get_theta_e_offset_mech()),
-                        balance_vehicle_car.m0_zero_theta_e_calib_flag
-                    );
-
-                    ESP_LOGI(
-                        TAG,
-                        "save_NVS_result:%s \r\n",
-                        esp_err_to_name(ret)
-                    );
-
-                    zero_e_cnt = 0;/*退出采样*/
-                }
-            }
-            
         }
         
-        #ifdef USE_FOC_SPWM
-            /*设置Uq,Ud*/
-            vfoc_set_spwm(
-                vfoc_get_uqd().Uq,
-                vfoc_get_uqd().Ud,
-                MOTOR_DRV_VBUS
-            );
-        #elif defined(USE_FOC_SVPWM)
-            /*设置Uq,Ud*/
-            vfoc_set_svpwm(
-                vfoc_get_uqd().Uq,
-                vfoc_get_uqd().Ud,
-                MOTOR_DRV_VBUS
-            );
-        #endif
-
+        /*设置PWM占空比*/
         motor_set_pwm_duty(
             vfoc_get_pwm_duty().duty_Ua,
             vfoc_get_pwm_duty().duty_Ub,
@@ -1057,6 +1118,42 @@ void foc_task_creat(void)
     motor_get_current_main();
 
     /*
+     * 配置PWM。
+     */
+    esp32_mcpwm_init();
+
+
+    // 读取flash参数
+    esp_err_t err = cfg_readfrom_flash(&balance_vehicle_car);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG,
+                "read_NVS_failed: %s (0x%x)",
+                esp_err_to_name(err),
+                err
+        );
+    }
+    else
+    {
+        ESP_LOGI(TAG,"flash_read_m0_mech_offset_ok = %.3f,flag:%d,theta:%.4f\r\n",
+            balance_vehicle_car.m0_e_ofset_rad,
+            balance_vehicle_car.m0_zero_theta_e_calib_flag,
+            get_vfoc_theta_e_rad(balance_vehicle_car.m0_e_ofset_rad)
+                    
+        );
+    }
+
+    /*零电角度校准*/
+
+    if ( !balance_vehicle_car.m0_zero_theta_e_calib_flag )
+    {/*未进行电角度零点对齐*/
+        
+        vfoc_calibrate_m0_offset();
+        
+    }
+        
+
+    /*
     * 创建 FOC 控制任务。
     *    创建一个固定运行在 CPU 核心1上的高优先级电机控制任务
     */
@@ -1086,30 +1183,5 @@ void foc_task_creat(void)
     }
     
 
-    /*
-     * 配置PWM。
-     */
-    esp32_mcpwm_init();
-
-
-    // 读取flash参数
-    esp_err_t err = cfg_readfrom_flash(&balance_vehicle_car);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG,
-                "read_NVS_failed: %s (0x%x)",
-                esp_err_to_name(err),
-                err
-        );
-    }
-    else
-    {
-        ESP_LOGI(TAG,"flash_read_m0_mech_offset_ok = %.3f,flag:%d,theta:%.4f\r\n",
-            balance_vehicle_car.m0_mech_ofset,
-            balance_vehicle_car.m0_zero_theta_e_calib_flag,
-            get_vfoc_theta_e_rad(balance_vehicle_car.m0_mech_ofset)
-                    
-        );
-    }
 }
 

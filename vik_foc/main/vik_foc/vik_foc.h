@@ -24,6 +24,9 @@
 // 角度 → 弧度
 #define FOC_DEG_TO_RAD(deg)     ( ( ((float)deg) * FOC_PI ) / 180.0f )
 
+// 弧度 转 角度 (RAD -> DEG)
+#define FOC_RAD_TO_DEG(rad) ((rad) * (180.0f / FOC_PI))
+
 // √3/2 的值（约 0.8660），FOC 算法中常用的固定系数
 #define FOC_SQRT3_DIV_2        0.8660254037844386f
 // 2/√3 的值（约 1.1547），FOC 算法中常用的固定系数
@@ -288,6 +291,7 @@ void set_actual_iq(foc_data_t *vfoc_dt , float iq);
 void set_actual_id(foc_data_t *vfoc_dt , float id);
 float get_d_cross_couple(foc_data_t *vfoc_dt);
 float get_q_cross_couple(foc_data_t *vfoc_dt);
+float electricalAngleWrap(float angle_rad);
 
 void vfoc_init(foc_data_t *vfoc_dt);
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s);

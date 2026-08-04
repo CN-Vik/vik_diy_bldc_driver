@@ -105,7 +105,7 @@ void flash_nvs_app_main(void)
     // balance_vehicle_car.ki = 0.1f;
     // balance_vehicle_car.kd = 0.05f;
     // balance_vehicle_car.freq = 10000;
-    // balance_vehicle_car.m0_mech_ofset = 346.3f; 
+    // balance_vehicle_car.m0_e_ofset_rad = 346.3f; 
     // balance_vehicle_car.enable = 1;
     // snprintf(balance_vehicle_car.dev_name, sizeof(balance_vehicle_car.dev_name), "ESP32_DEVICE");
 
@@ -120,12 +120,12 @@ void flash_nvs_app_main(void)
     }
     else
     {
-        printf("读取成功!8 kp = %.2f \r\n", balance_vehicle_car.m0_mech_ofset);
+        printf("读取成功!8 kp = %.2f \r\n", balance_vehicle_car.m0_e_ofset_rad);
     }
 
     printf("7kp = %.3f,\r\n",
 
-        balance_vehicle_car.m0_mech_ofset
+        balance_vehicle_car.m0_e_ofset_rad
 
     );
 

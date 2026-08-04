@@ -23,7 +23,7 @@
 typedef struct
 {
     uint8_t m0_zero_theta_e_calib_flag;/*M0电机零电角度校准标志*/
-    float m0_mech_ofset;/*M0电机零点角度时刻的机械角度偏移值*/
+    float m0_e_ofset_rad;/*M0电机零点角度时刻的电角度偏移值,弧度制*/
     char dev_name[16];
 } DevConfig_t;
 

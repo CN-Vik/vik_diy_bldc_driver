@@ -12,6 +12,9 @@
 #include <math.h>
 #include "esp_log.h"
 #include "stdbool.h"
+#include "esp32_flas_nvs.h"
+#include <math.h>
+
 
 static const char *TAG = "vik_foc";
 
@@ -355,38 +358,55 @@ void set_vfoc_theta_e_rad(float e_value)
  */
 float get_vfoc_theta_e_rad(float m_angle)
 {
-    float elec_deg;/*电角度*/
+    float theta_e_rad;/*电角度*/
+    float mech_rad;/*机械角度 弧度制*/
+    float mech_deg;/*机械角度 角度制*/
+
+    mech_deg = m_angle;
+
+    /*
+     * 限制到 0~360 度
+     */
+    while (mech_deg >= 360.0f)
+    {
+        mech_deg -= 360.0f;
+    }
+
+    while (mech_deg < 0.0f)
+    {
+        mech_deg += 360.0f;
+    }
+
+    /*
+     * 机械角 deg -> rad
+    */
+    mech_rad = FOC_DEG_TO_RAD(mech_deg);
 
     /*
      * 机械角度 -> 电角度
         电角度 = 机械角度 * 电机磁极对数
      */
-    // elec_deg = (m_angle - vfoc_m0_dt.motor_par.theta_e_offset_mech) * vfoc_m0_dt.motor_par.pole_pairs;
-    elec_deg = (m_angle - vfoc_m0_dt.motor_par.theta_e_offset_mech) * vfoc_m0_dt.motor_par.pole_pairs;
+    theta_e_rad = (mech_rad * vfoc_m0_dt.motor_par.pole_pairs) + 
+                    (balance_vehicle_car.m0_e_ofset_rad-0.98f);/*e_ofset实测=2.53，还需自动加大aplha值从当前0.5开始加*/
 
     /*
-     * 限制到 0~360 度
+     * 电角归一化 0~2PI
      */
-    while (elec_deg >= 360.0f)
+    while(theta_e_rad >= FOC_2PI)
     {
-        elec_deg -= 360.0f;
+        theta_e_rad -= FOC_2PI;
     }
 
-    while (elec_deg < 0.0f)
+    while(theta_e_rad < 0)
     {
-        elec_deg += 360.0f;
+        theta_e_rad += FOC_2PI;
     }
 
-    elec_deg = FOC_DEG_TO_RAD(elec_deg);
 
     /*设置vik_foc的电角度值，弧度制*/
-    set_vfoc_theta_e_rad(elec_deg);
-    // vfoc_m0_dt.motor_par.theta_e = elec_deg;
+    set_vfoc_theta_e_rad(theta_e_rad);
 
-    /*
-     * 角度制 -> 弧度制
-     */
-    return elec_deg;
+    return theta_e_rad;
 
 }
 
@@ -937,20 +957,11 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
 
 
 /**
- * @brief 开环电压 FOC + SVPWM
- *
- * 这是替代 vfoc_open_loop_spwm_run() 的量产风格版本。
- *
- * 注意：
- * 这仍然是开环控制，不是完整量产 FOC。
- * 真正量产还需要：
- *      电流采样
- *      电流环 PI
- *      速度环 PI
- *      位置/速度估算或编码器
- *      过流/过压/欠压/堵转/温度保护
- *
- * 但是这个 SVPWM 调制器本身是工程化写法。
+ * @brief SVPWM计算
+ * 
+ * @param uq 
+ * @param ud 
+ * @param vbus 
  */
 void vfoc_set_svpwm(float uq,
                     float ud,
@@ -1418,6 +1429,31 @@ float get_q_cross_couple(foc_data_t *vfoc_dt)
     }
     
     return q_cros_data;
+}
+
+
+/**
+ * @brief 电角度归一化
+ * 
+ * @param angle_rad 
+ * @return float 
+ */
+float electricalAngleWrap(float angle_rad)
+{
+    // 1. 处理 fmodf 计算
+    angle_rad = fmodf(angle_rad, FOC_2PI);/* 返回 angle_rad 除以 FOC_2PI 的浮点余数*/
+
+    // 2. 修正负数（包括 -0.0f 的边缘修正）
+    if (angle_rad < 0.0f) {
+        angle_rad += FOC_2PI;
+    }
+
+    // 3. 防范浮点数累加导致的极小精度误差（如 2*PI - 1e-7f 变相等于 2*PI 的情况）
+    if (angle_rad >= FOC_2PI) {
+        angle_rad = 0.0f;
+    }
+
+    return angle_rad;
 }
 
 
