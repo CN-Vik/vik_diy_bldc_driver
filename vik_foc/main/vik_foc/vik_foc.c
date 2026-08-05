@@ -361,6 +361,8 @@ float get_vfoc_theta_e_rad(float m_angle)
     float theta_e_rad;/*电角度*/
     float mech_rad;/*机械角度 弧度制*/
     float mech_deg;/*机械角度 角度制*/
+    float theta_e_rad_ofset = -2.53f;/*电角度*/
+
 
     mech_deg = m_angle;
 
@@ -382,12 +384,16 @@ float get_vfoc_theta_e_rad(float m_angle)
     */
     mech_rad = FOC_DEG_TO_RAD(mech_deg);
 
+    /*x+y=-2.53rad, y=-2.53-x*/
+    theta_e_rad_ofset = theta_e_rad_ofset-balance_vehicle_car.m0_e_ofset_rad;
+    
+
     /*
      * 机械角度 -> 电角度
         电角度 = 机械角度 * 电机磁极对数
      */
     theta_e_rad = (mech_rad * vfoc_m0_dt.motor_par.pole_pairs) + 
-                    (balance_vehicle_car.m0_e_ofset_rad-0.98f);/*e_ofset实测=2.53，还需自动加大aplha值从当前0.5开始加*/
+                    (balance_vehicle_car.m0_e_ofset_rad + theta_e_rad_ofset);/*e_ofset实测=2.53，还需自动加大aplha值从当前0.5开始加*/
 
     /*
      * 电角归一化 0~2PI
