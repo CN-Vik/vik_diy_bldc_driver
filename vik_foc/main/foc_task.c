@@ -190,31 +190,7 @@ static inline float current_lpf(float in, float old)
  */
 void vfoc_speed_loop(float exp_sped_rpm)
 {
-    static uint32_t log_cnt = 0;
     float m0_mch_rpm = 0.0f;
-
-    clark_parm_t clark_temp={0};
-    park_parm_t park_temp={0};
-
-    /* clark变换,
-    输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
-    clark_temp = clark_tansform(
-        get_vfoc_ia_current(),
-        get_vfoc_ib_current(),
-        get_vfoc_ic_current()
-    );
-
-    /* park变换
-    * 输入两相静止坐标系电流 I_alpha、I_beta，
-    * 结合当前电角度 theta_e_rad，
-    * 计算旋转坐标系下的 Id、Iq。
-    * */
-    park_temp = park_tansform(
-        clark_temp.I_alpha,
-        clark_temp.I_beta,
-        get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
-        // 0.0f
-    );
 
     #ifdef TASK_RUNTIME_STATIS
         ++sped_loop_time_stamp.index;
@@ -259,8 +235,8 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
-    speed_loop_pid.kp = 0.2f;
-    speed_loop_pid.ki = 0.0f;
+    speed_loop_pid.kp = 0.006f;/*0.0155f*/
+    speed_loop_pid.ki = 0.490f;
     speed_loop_pid.kd = 0.0f;
 
     speed_loop_pid.ki_integral_max = +UQ_LIMIT*0.5f;
@@ -273,7 +249,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
     speed_loop_pid.last_err_v = speed_loop_pid.err_v;
 
-    #if 0
+    #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
         // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
         curent_loop_park.Uq = speed_loop_pid.pid_out;
@@ -308,40 +284,42 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
     
     #if 1
+        static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>100 ) 
+        if ( (log_cnt++)>10 ) 
         {
             log_cnt = 0;
-            // ESP_LOGI(
-            //     TAG,
-            //     "vfoc_sped: %.2f,%.2f ,%.2f,%.2f ,%.2f,%.2f ,%.2f\r\n",
-            //     speed_loop_pid.exp_v,
-            //     speed_loop_pid.now_v,
-
-            //     speed_loop_pid.err_v,
-            //     speed_loop_pid.kp_out,
-
-            //     speed_loop_pid.pid_out,/*speed_pid_out*/
-            //     curent_loop_park.Uq,
-            //     park_temp.iq
-                
-            // );
-            // set_theta_e_offset_mech(get_theta_e_offset_mech()+10.0f);
             ESP_LOGI(
-                
                 TAG,
-                "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f,  %.2f,%.2f\r\n",
-                get_vfoc_theta_m_deg(),
-                get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
-                // get_theta_e_offset_mech(),
-                balance_vehicle_car.m0_e_ofset_rad,
-                m0_mch_rpm,
-                curent_loop_park.Uq,
+                "vfoc_sped: %.2f,%.2f ,%.4f,%.4f,%.4f,%.4f ,%.2f \r\n",
+                speed_loop_pid.exp_v,
+                speed_loop_pid.now_v,
 
-                park_temp.iq,
-                park_temp.id
+                speed_loop_pid.err_v,
+                speed_loop_pid.kp_out,
+                speed_loop_pid.ki_out,
+                speed_loop_pid.pid_out,/*speed_pid_out*/
+
+                curent_loop_park.Uq
+                // park_temp.iq
                 
             );
+            // set_theta_e_offset_mech(get_theta_e_offset_mech()+10.0f);
+            // ESP_LOGI(
+                
+            //     TAG,
+            //     "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f,  %.2f,%.2f\r\n",
+            //     get_vfoc_theta_m_deg(),
+            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+            //     // get_theta_e_offset_mech(),
+            //     balance_vehicle_car.m0_e_ofset_rad,
+            //     m0_mch_rpm,
+            //     curent_loop_park.Uq,
+
+            //     park_temp.iq,
+            //     park_temp.id
+                
+            // );
 
         }
     #endif
@@ -877,6 +855,8 @@ static void foc_task(void *arg)
     float motor_exp_rpm = 0.0;
     float iq_ref = 0.0;
 
+    uint16_t freq_cnt = 0;
+
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -910,32 +890,36 @@ static void foc_task(void *arg)
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
         {/*已经进行了电角度零点对齐*/
 
-            motor_exp_rpm = +400.0f;
+            motor_exp_rpm = +300.0f;
 
-            #if (VFOC_CURENT_LOOP_EN == 1)
-                // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
-                iq_ref = 0.3f;
-                vfoc_curent_loop(iq_ref, 0.0f);
-            #else
-                vfoc_speed_loop(motor_exp_rpm);
-            #endif
+            if ((++freq_cnt)>=4)
+            {/*20KHZ/4 = 5KHZ*/
+                freq_cnt = 0;
+                #if (VFOC_CURENT_LOOP_EN == 1)
+                    // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
+                    iq_ref = 0.3f;
+                    vfoc_curent_loop(iq_ref, 0.0f);
+                #else
+                    vfoc_speed_loop(motor_exp_rpm);
+                #endif
+    
+                #ifdef USE_FOC_SPWM
+                    /*设置Uq,Ud*/
+                    vfoc_set_spwm(
+                        vfoc_get_uqd().Uq,
+                        vfoc_get_uqd().Ud,
+                        MOTOR_DRV_VBUS
+                    );
+                #elif defined(USE_FOC_SVPWM)
+                    /*设置Uq,Ud*/
+                    vfoc_set_svpwm(
+                        vfoc_get_uqd().Uq,
+                        vfoc_get_uqd().Ud,
+                        MOTOR_DRV_VBUS
+                    );
+                #endif
 
-            #ifdef USE_FOC_SPWM
-                /*设置Uq,Ud*/
-                vfoc_set_spwm(
-                    vfoc_get_uqd().Uq,
-                    vfoc_get_uqd().Ud,
-                    MOTOR_DRV_VBUS
-                );
-            #elif defined(USE_FOC_SVPWM)
-                /*设置Uq,Ud*/
-                vfoc_set_svpwm(
-                    vfoc_get_uqd().Uq,
-                    vfoc_get_uqd().Ud,
-                    MOTOR_DRV_VBUS
-                );
-            #endif
-
+            }
         
         }else{/*未进行电角度零点对齐*/
 

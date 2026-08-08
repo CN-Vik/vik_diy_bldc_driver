@@ -1097,7 +1097,7 @@ esp_err_t motor_encoder_get_angle(float *angle_deg)
  */
 static inline float current_lpf(float in, float old)
 {
-    const float alpha = 0.45f;/*0.2~0.4*/
+    const float alpha = 0.35f;/*0.2~0.4*/
 
     return old + alpha * (in - old);
 }
@@ -1256,6 +1256,7 @@ static void motor_get_angle_task(void *arg)
 {
     float angle = 0.0f;
     float m0_mech_rpm = 0.0f;
+    float last_m0_mech_rpm = 0.0f;
 
     static int log_cnt = 0;
     int64_t angle_time_stamp_start = 0; /*时间戳,单位:us*/
@@ -1292,6 +1293,9 @@ static void motor_get_angle_task(void *arg)
             );
 
             m0_mech_rpm = (pll.omega/(6.0f));
+            m0_mech_rpm = current_lpf(m0_mech_rpm,last_m0_mech_rpm);
+            last_m0_mech_rpm = m0_mech_rpm;
+
             // set_vfoc_mech_w( get_motor_w_deg_s_by_angle(angle) );/*计算设置，机械角速度*/
             // set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
             // ========== 队列发送核心代码 ==========
