@@ -14,9 +14,10 @@
 #include "stdint.h"
 
 
-#define CURRENT_LOOP_FREQ   (20000.0f)  /*20KHZ*/
-#define CURRENT_LOOP_DT     (1.0f/CURRENT_LOOP_FREQ) /*50us = 0.00005s*/
-#define SPEED_LOOP_DT       ( 1.0f / (CURRENT_LOOP_FREQ/4.0f) ) /* 20/4= 5KHZ*/
+#define CURRENT_LOOP_FREQ       (20000.0f)  /*20KHZ*/
+#define CURRENT_LOOP_DT         (1.0f/CURRENT_LOOP_FREQ) /*50us = 0.00005s*/
+#define SPEED_LOOP_DT           ( 1.0f / (CURRENT_LOOP_FREQ/4.0f) ) /* 20/4= 5KHZ*/
+#define POSTION_LOOP_DT         ( 1.0f / (CURRENT_LOOP_FREQ/10.0f) ) /* 20/4= 5KHZ*/
 
 
 /**

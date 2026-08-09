@@ -292,6 +292,8 @@ void set_actual_id(foc_data_t *vfoc_dt , float id);
 float get_d_cross_couple(foc_data_t *vfoc_dt);
 float get_q_cross_couple(foc_data_t *vfoc_dt);
 float electricalAngleWrap(float angle_rad);
+float angle_error_deg(float expct_deg, float current_deg);
+
 
 void vfoc_init(foc_data_t *vfoc_dt);
 void vfoc_update_open_loop_angle(float target_rpm, float dt_s);

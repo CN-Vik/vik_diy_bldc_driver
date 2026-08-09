@@ -63,7 +63,6 @@ TEZ ------------------------------------ TEZ
 #include "motor_angle_acqu.h"
 #include "motor_cfg_pwm.h"
 #include "esp_timer.h"
-#include "vik_foc.h"
 #include "vik_foc_pid.h"
 #include "esp_task_wdt.h"
 #include "esp32_flas_nvs.h"
@@ -88,11 +87,13 @@ TaskHandle_t foc_task_handle = NULL;
     vfoc_time_stamp_t foc_time_stamp={0};
     vfoc_time_stamp_t curent_loop_time_stamp={0};
     vfoc_time_stamp_t sped_loop_time_stamp={0};
+    vfoc_time_stamp_t sped_postion_time_stamp={0};
 #endif
 
 vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
 vfoc_pid_t speed_loop_pid = {0};
+vfoc_pid_t postion_loop_pid = {0};
 
 
 park_parm_t curent_loop_park = {
@@ -179,6 +180,161 @@ static inline float current_lpf(float in, float old)
     const float alpha = 0.40;
 
     return old + alpha * (in - old);
+}
+
+
+
+/**
+ * @brief 位置环PD控制(不基于电流环，输出结果直接作用于Uq)
+ * 
+ * @param exp_postion_deg
+ */
+void vfoc_postion_loop(float exp_postion_deg)
+{
+    #ifdef TASK_RUNTIME_STATIS
+        ++sped_postion_time_stamp.index;
+        sped_postion_time_stamp.index %= TIME_STAMP_SIZE;
+        sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % (TIME_STAMP_SIZE)].strat_t = esp_timer_get_time();
+        #if 0 /*任务运行频率统计*/
+            if ( sped_postion_time_stamp.index == 20 )
+            {
+                ESP_LOGW(
+                    TAG,
+                    "vfoc_speed_loop_t:%lld,%lld,%lld us\r\n",
+                    sped_postion_time_stamp.time[20-1].strat_t,
+                    sped_postion_time_stamp.time[20-2].strat_t,
+                    sped_postion_time_stamp.time[20-2].strat_t - sped_postion_time_stamp.time[20-1].strat_t
+
+                );
+
+                sped_postion_time_stamp.index = 0;
+            }
+        #endif
+    #endif
+
+    /*设置速度环周期值*/
+    postion_loop_pid.pid_dt = POSTION_LOOP_DT;
+
+    /*设置转速期望值*/
+    LIMIT_EXP_MECH_360(exp_postion_deg);
+    postion_loop_pid.exp_v = (exp_postion_deg);
+
+    float m0_mch_postion_deg = 0.0f;
+
+    if ( xQueueReceive(g_motor0_mech_deg_queue, &m0_mch_postion_deg, 5)!= pdPASS )
+    {
+        ESP_LOGW(
+            TAG,
+            "g_motor0_mech_deg_queue recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_deg_queue),
+            uxQueueMessagesWaiting(g_motor0_mech_deg_queue)
+        );
+    }
+
+    
+    /*获取当前角度位置*/
+    postion_loop_pid.now_v = m0_mch_postion_deg;
+    // postion_loop_pid.now_v = get_vfoc_theta_m_deg();
+
+    /*角度误差 = 期望值-实际值*/
+    postion_loop_pid.err_v = angle_error_deg(postion_loop_pid.exp_v,postion_loop_pid.now_v);
+
+    postion_loop_pid.kp = 0.09f;/*0.0155f*/
+    postion_loop_pid.ki = 0.0f;
+    postion_loop_pid.kd = 0.0f;
+
+    postion_loop_pid.ki_out_max = +UQ_LIMIT;
+    postion_loop_pid.ki_out_min = -UQ_LIMIT;
+
+    postion_loop_pid.pid_out_max = +UQ_LIMIT;
+    postion_loop_pid.pid_out_min = -UQ_LIMIT;
+
+    vfoc_pid_calt(&postion_loop_pid);
+
+    postion_loop_pid.last_err_v = postion_loop_pid.err_v;
+
+    #if 1
+        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
+        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
+        curent_loop_park.Uq = postion_loop_pid.pid_out;
+        curent_loop_park.Ud = 0.0f;
+
+        // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
+    #else
+        static float temp_uq = 0.0f;
+        temp_uq+=0.001f;
+        if ( temp_uq>=6.5f )
+        {
+            temp_uq=0.0f;
+        }
+        curent_loop_park.Uq = temp_uq;
+        // curent_loop_park.Uq = UQ_LIMIT;
+        curent_loop_park.Uq = +3.0f;
+        curent_loop_park.Ud = 0.0f;
+        
+    #endif
+    curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
+
+    #ifdef TASK_RUNTIME_STATIS
+        sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].end_t = esp_timer_get_time();
+        sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].dt = 
+            sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].end_t -
+            sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].strat_t;
+        #if 0 /*任务运行时长统计*/
+            if ( sped_postion_time_stamp.index == 20 )
+            {
+                ESP_LOGW(
+                    TAG,
+                    "vfoc_speed_loop_DT:%lldus\r\n",
+                    sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].dt
+                );
+
+                sped_postion_time_stamp.index = 0;
+            }
+        #endif
+    #endif
+
+    
+    #if 1
+        static uint32_t log_cnt = 0;
+        // if ( (t_index==6) && ((log_cnt++)>1000) )
+        if ( (log_cnt++)>10 ) 
+        {
+            log_cnt = 0;
+
+            ESP_LOGI(
+                TAG,
+                "vfoc_postion: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f \r\n",
+                postion_loop_pid.exp_v,//0
+                postion_loop_pid.now_v,//1
+                postion_loop_pid.err_v,//2
+
+                postion_loop_pid.kp_out,//3
+                postion_loop_pid.kd_out,//4
+                postion_loop_pid.pid_out,
+                curent_loop_park.Uq
+            );
+
+            // set_theta_e_offset_mech(get_theta_e_offset_mech()+10.0f);
+            // ESP_LOGI(
+                
+            //     TAG,
+            //     "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f,  %.2f,%.2f\r\n",
+            //     get_vfoc_theta_m_deg(),
+            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+            //     // get_theta_e_offset_mech(),
+            //     balance_vehicle_car.m0_e_ofset_rad,
+            //     m0_mch_rpm,
+            //     curent_loop_park.Uq,
+
+            //     park_temp.iq,
+            //     park_temp.id
+                
+            // );
+
+        }
+    #endif
+
 }
 
 
@@ -871,6 +1027,7 @@ static void foc_task(void *arg)
     float zero_e_mech_sum = 0.0f;
 
     float motor_exp_rpm = 0.0;
+    float motor_exp_pos_deg = 0.0;
     float iq_ref = 0.0;
 
     uint16_t freq_cnt = 0;
@@ -920,35 +1077,39 @@ static void foc_task(void *arg)
                 
             }
             
-            
-            if ((++freq_cnt)>=4)
-            {/*20KHZ/4 = 5KHZ*/
-                freq_cnt = 0;
-                #if (VFOC_CURENT_LOOP_EN == 1)
-                    // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
-                    iq_ref = 0.3f;
-                    vfoc_curent_loop(iq_ref, 0.0f);
-                #else
-                    vfoc_speed_loop(motor_exp_rpm);
-                #endif
-    
-                #ifdef USE_FOC_SPWM
-                    /*设置Uq,Ud*/
-                    vfoc_set_spwm(
-                        vfoc_get_uqd().Uq,
-                        vfoc_get_uqd().Ud,
-                        MOTOR_DRV_VBUS
-                    );
-                #elif defined(USE_FOC_SVPWM)
-                    /*设置Uq,Ud*/
-                    vfoc_set_svpwm(
-                        vfoc_get_uqd().Uq,
-                        vfoc_get_uqd().Ud,
-                        MOTOR_DRV_VBUS
-                    );
-                #endif
+            switch ((++freq_cnt))
+            {
+                case 2:{/* 20KHZ/2= 10KHZ*/
 
+                    #if (VFOC_CURENT_LOOP_EN == 1)
+                        // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
+                    #else
+                        // vfoc_speed_loop(motor_exp_rpm);
+                    #endif
+
+                    break;
+                }
+
+                case 10:{/* 20KHZ/10= 2KHZ*/
+                    motor_exp_pos_deg =108.0f;
+                    vfoc_postion_loop(motor_exp_pos_deg);
+                    freq_cnt = 0;
+                    break;
+                }
+                    
+                default:{
+                    break;
+                }
             }
+
+
+            #if (VFOC_CURENT_LOOP_EN == 1)/*20KHZ运行*/
+                // iq_ref = 0.3f;
+                vfoc_curent_loop(iq_ref, 0.0f);
+            #else
+                void;
+            #endif
+            
         
         }else{/*未进行电角度零点对齐*/
 
@@ -959,6 +1120,23 @@ static void foc_task(void *arg)
             );
 
         }
+
+        #ifdef USE_FOC_SPWM
+            /*设置Uq,Ud*/
+            vfoc_set_spwm(
+                vfoc_get_uqd().Uq,
+                vfoc_get_uqd().Ud,
+                MOTOR_DRV_VBUS
+            );
+        #elif defined(USE_FOC_SVPWM)
+            /*设置Uq,Ud*/
+            vfoc_set_svpwm(
+                vfoc_get_uqd().Uq,
+                vfoc_get_uqd().Ud,
+                MOTOR_DRV_VBUS
+            );
+        #endif
+
         
         /*设置PWM占空比*/
         motor_set_pwm_duty(

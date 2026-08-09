@@ -35,6 +35,7 @@ SemaphoreHandle_t g_mos_enable_mutex;
 /*------队列--------*/
 QueueHandle_t g_motor_cmd_queue = NULL;
 QueueHandle_t g_motor0_mech_rpm_queue = NULL;
+QueueHandle_t g_motor0_mech_deg_queue = NULL;
 QueueHandle_t g_uart_print_queue = NULL;
 /*------队列--------*/
 
@@ -129,14 +130,16 @@ void rtos_mutex_creat(void)
  */
 void rtos_queue_creat(void)
 {
-    /*
-     * 电机命令队列：
-     * 其他任务通过这个队列给电机任务发送命令。
-     */
     g_motor0_mech_rpm_queue = xQueueCreate(10, sizeof(float));
     if (g_motor0_mech_rpm_queue == NULL)
     {
         ESP_LOGE(TAG, "创建 g_motor0_mech_rpm_queue 失败");
+    }
+
+    g_motor0_mech_deg_queue = xQueueCreate(10, sizeof(float));
+    if (g_motor0_mech_deg_queue == NULL)
+    {
+        ESP_LOGE(TAG, "创建 g_motor0_mech_deg_queue 失败");
     }
 
     // /*

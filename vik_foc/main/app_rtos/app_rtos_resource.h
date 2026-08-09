@@ -106,6 +106,7 @@ extern QueueHandle_t g_motor_cmd_queue;
 /* UART打印队列 */
 extern QueueHandle_t g_uart_print_queue;
 extern QueueHandle_t g_motor0_mech_rpm_queue;
+extern QueueHandle_t g_motor0_mech_deg_queue;
 
 /*----------------队列---------------------*/
 

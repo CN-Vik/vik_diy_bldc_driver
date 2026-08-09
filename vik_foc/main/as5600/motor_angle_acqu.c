@@ -1301,6 +1301,8 @@ static void motor_get_angle_task(void *arg)
             // ========== 队列发送核心代码 ==========
             // 队列深度10，满了直接丢弃本次转速，不阻塞任务
             xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
+
+            xQueueSend(g_motor0_mech_deg_queue, &angle, 0);/*发送机械角度值*/
             // if(xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0) != pdPASS)
             // {
             //     // 队列已满，数据丢弃，可打印提示（调试用）

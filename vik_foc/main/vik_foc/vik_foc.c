@@ -1338,7 +1338,7 @@ float limit_float(float x, float min, float max)
  * @param current_deg 当前角度值
  * @return float 输出的带旋转方向的误差角度值，eg: -45(逆时针旋转四十五度), 90(顺时针旋转90度)
  */
-static float angle_error_deg(float expct_deg, float current_deg)
+float angle_error_deg(float expct_deg, float current_deg)
 {
     /*误差值 = 期望值-当前值*/
     float err = expct_deg - current_deg;
