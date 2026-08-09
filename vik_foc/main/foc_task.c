@@ -235,12 +235,12 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
-    speed_loop_pid.kp = 0.006f;/*0.0155f*/
-    speed_loop_pid.ki = 0.490f;
+    speed_loop_pid.kp = 0.0098f;/*0.0155f*/
+    speed_loop_pid.ki = 0.051f;
     speed_loop_pid.kd = 0.0f;
 
-    speed_loop_pid.ki_integral_max = +UQ_LIMIT*0.5f;
-    speed_loop_pid.ki_integral_min = -UQ_LIMIT*0.5f;
+    speed_loop_pid.ki_out_max = +UQ_LIMIT;
+    speed_loop_pid.ki_out_min = -UQ_LIMIT;
 
     speed_loop_pid.pid_out_max = +UQ_LIMIT;
     speed_loop_pid.pid_out_min = -UQ_LIMIT;
@@ -257,9 +257,17 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
+        static float temp_uq = 0.0f;
+        temp_uq+=0.001f;
+        if ( temp_uq>=6.5f )
+        {
+            temp_uq=0.0f;
+        }
+        curent_loop_park.Uq = temp_uq;
         // curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Uq = -6.0f;
+        curent_loop_park.Uq = +3.0f;
         curent_loop_park.Ud = 0.0f;
+        
     #endif
     curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
     // curent_loop_park.Uq *= (MOTOR0_UQ_DIR);
@@ -289,21 +297,31 @@ void vfoc_speed_loop(float exp_sped_rpm)
         if ( (log_cnt++)>10 ) 
         {
             log_cnt = 0;
+            
+            // ESP_LOGI(
+            //     TAG,
+            //     "vfoc_sped:%.4f,%.2f\r\n",
+            //     curent_loop_park.Uq,
+            //     speed_loop_pid.now_v
+                
+            // );
+
             ESP_LOGI(
                 TAG,
-                "vfoc_sped: %.2f,%.2f ,%.4f,%.4f,%.4f,%.4f ,%.2f \r\n",
-                speed_loop_pid.exp_v,
-                speed_loop_pid.now_v,
-
+                "vfoc_sped: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f \r\n",
+                speed_loop_pid.exp_v,//0
+                speed_loop_pid.now_v,//1
                 speed_loop_pid.err_v,
-                speed_loop_pid.kp_out,
-                speed_loop_pid.ki_out,
-                speed_loop_pid.pid_out,/*speed_pid_out*/
-
-                curent_loop_park.Uq
+                // speed_loop_pid.kp_out,
+                speed_loop_pid.ki,//
+                speed_loop_pid.ki_integral,//3
+                speed_loop_pid.pid_dt,//4
+                speed_loop_pid.ki_out,//5
+                speed_loop_pid.pid_out/*speed_pid_out*/
+                // curent_loop_park.Uq
                 // park_temp.iq
-                
             );
+
             // set_theta_e_offset_mech(get_theta_e_offset_mech()+10.0f);
             // ESP_LOGI(
                 
@@ -890,8 +908,19 @@ static void foc_task(void *arg)
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
         {/*已经进行了电角度零点对齐*/
 
-            motor_exp_rpm = +300.0f;
-
+            static uint32_t run_cnt;
+            if ((run_cnt++)>=(20*1000*3))
+            {
+                run_cnt = 0;
+                motor_exp_rpm+=100.0f;
+                if (motor_exp_rpm>=(700.0f))
+                {
+                    motor_exp_rpm=100.0f;
+                }
+                
+            }
+            
+            
             if ((++freq_cnt)>=4)
             {/*20KHZ/4 = 5KHZ*/
                 freq_cnt = 0;

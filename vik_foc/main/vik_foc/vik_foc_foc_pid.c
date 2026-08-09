@@ -43,19 +43,19 @@ void vfoc_pid_calt(vfoc_pid_t *pid)
 
     /*积分部分：先累加误差 ,当超过当前值超过期望值，积分部分就起负反馈作用*/
     pid->ki_integral += (pid->err_v * pid->pid_dt);
-    /*积分限幅*/
-    if (pid->ki_integral > pid->ki_integral_max)
-    {
-        pid->ki_integral = pid->ki_integral_max;
-    }
-    
-    if (pid->ki_integral < pid->ki_integral_min )
-    {
-        pid->ki_integral = pid->ki_integral_min;
-    }
     
     /* 计算积分输出 */
     pid->ki_out = (pid->ki * pid->ki_integral);
+    /*积分输出限幅*/
+    if (pid->ki_out > pid->ki_out_max)
+    {
+        pid->ki_out = pid->ki_out_max;
+    }
+    
+    if (pid->ki_out < pid->ki_out_min )
+    {
+        pid->ki_out = pid->ki_out_min;
+    }
 
 
     /*kd微分参数:本次误差值 - 上一次误差值*/

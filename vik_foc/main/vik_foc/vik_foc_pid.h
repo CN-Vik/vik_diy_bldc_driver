@@ -36,13 +36,12 @@ typedef struct
     float last_err_v;         /* 上一次误差 */
 
     float ki_integral;            /* 积分误差累计 */
-    float ki_integral_min;       /* 积分最小限幅 */
-    float ki_integral_max;       /* 积分最大限幅 */
-
     float kd_parm;           /* 微分参数 */
 
     float kp_out;
     float ki_out;
+    float ki_out_min;
+    float ki_out_max;
     float kd_out;
     float pid_out;             /* PID 输出 */
 
