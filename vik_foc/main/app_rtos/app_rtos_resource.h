@@ -100,6 +100,16 @@ extern EventGroupHandle_t g_app_event_group;
 /*----------------事件标志组---------------------*/
 
 
+
+/*----------------邮箱---------------------*/
+/* 定义邮箱句柄，本质是QueueHandle_t */
+extern QueueHandle_t g_motor0_mech_rpm_mailbox;
+extern QueueHandle_t g_motor0_mech_deg_mailbox;
+
+/*----------------邮箱---------------------*/
+
+
+
 /*----------------队列---------------------*/
 /* 电机命令队列 */
 extern QueueHandle_t g_motor_cmd_queue;

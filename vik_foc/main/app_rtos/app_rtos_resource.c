@@ -32,6 +32,16 @@ SemaphoreHandle_t g_mos_enable_mutex;
 /*------互斥锁--------*/
 
 
+/*------邮箱-------*/
+
+/* 定义邮箱句柄，本质是QueueHandle_t */
+QueueHandle_t g_motor0_mech_rpm_mailbox = NULL;
+QueueHandle_t g_motor0_mech_deg_mailbox = NULL;
+
+/*------邮箱-------*/
+
+
+
 /*------队列--------*/
 QueueHandle_t g_motor_cmd_queue = NULL;
 QueueHandle_t g_motor0_mech_rpm_queue = NULL;
@@ -51,7 +61,20 @@ EventGroupHandle_t g_app_event_group = NULL;
  */
 void rtos_email_creat(void)
 {
+    // 创建邮箱：队列深度=1，每个元素大小 = float
+    g_motor0_mech_rpm_mailbox = xQueueCreate( 1, sizeof(float) );
+    if(g_motor0_mech_rpm_mailbox == NULL)
+    {
+        ESP_LOGE(TAG, "创建 g_motor0_mech_rpm_mailbox 失败 \r\n");
+    }
 
+
+    // 创建邮箱：队列深度=1，每个元素大小 = float
+    g_motor0_mech_deg_mailbox = xQueueCreate( 1, sizeof(float) );
+    if(g_motor0_mech_deg_mailbox == NULL)
+    {
+        ESP_LOGE(TAG, "创建 g_motor0_mech_rpm_mailbox 失败 \r\n");
+    }
 
 }
 
@@ -66,12 +89,12 @@ void rtos_binary_semaphore_creat(void)
      * 二值信号量：
      * 适合 ISR 通知任务、任务间简单同步。
     */
-    g_adc_done_sem = xSemaphoreCreateBinary();
-    if (g_adc_done_sem == NULL)
-    {
-        ESP_LOGE(TAG, "创建 g_adc_done_sem 失败");
+    // g_adc_done_sem = xSemaphoreCreateBinary();
+    // if (g_adc_done_sem == NULL)
+    // {
+    //     ESP_LOGE(TAG, "创建 g_adc_done_sem 失败");
         
-    }
+    // }
 
 
 }
@@ -193,9 +216,9 @@ void rtos_event_group_creat(void)
  */
 void app_rtos_resource_init(void)
 {
-    // rtos_email_creat();
-    // rtos_binary_semaphore_creat();
-    // rtos_semaphore_creat();
+    rtos_email_creat();
+    rtos_binary_semaphore_creat();
+    rtos_semaphore_creat();
     rtos_mutex_creat();
     rtos_queue_creat();
     rtos_event_group_creat();

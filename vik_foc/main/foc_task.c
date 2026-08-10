@@ -221,13 +221,13 @@ void vfoc_postion_loop(float exp_postion_deg)
 
     float m0_mch_postion_deg = 0.0f;
 
-    if ( xQueueReceive(g_motor0_mech_deg_queue, &m0_mch_postion_deg, 5)!= pdPASS )
+    if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
     {
         ESP_LOGW(
             TAG,
-            "g_motor0_mech_deg_queue recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_deg_queue),
-            uxQueueMessagesWaiting(g_motor0_mech_deg_queue)
+            "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+            uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
         );
     }
 
@@ -239,9 +239,9 @@ void vfoc_postion_loop(float exp_postion_deg)
     /*角度误差 = 期望值-实际值*/
     postion_loop_pid.err_v = angle_error_deg(postion_loop_pid.exp_v,postion_loop_pid.now_v);
 
-    postion_loop_pid.kp = 0.09f;/*0.0155f*/
+    postion_loop_pid.kp = 0.15f;/**/
     postion_loop_pid.ki = 0.0f;
-    postion_loop_pid.kd = 0.0f;
+    postion_loop_pid.kd = 0.0035f;
 
     postion_loop_pid.ki_out_max = +UQ_LIMIT;
     postion_loop_pid.ki_out_min = -UQ_LIMIT;
@@ -375,13 +375,13 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*设置转速期望值*/
     speed_loop_pid.exp_v = exp_sped_rpm;
 
-    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 10)!= pdPASS )
+    if ( xQueueReceive(g_motor0_mech_rpm_mailbox, &m0_mch_rpm, 5)!= pdPASS )
     {
         ESP_LOGW(
             TAG,
-            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
-            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+            "g_motor0_mech_rpm_mailbox recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_rpm_mailbox),
+            uxQueueMessagesWaiting(g_motor0_mech_rpm_mailbox)
         );
     }
     // if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
@@ -541,13 +541,13 @@ float vfoc_speed_loop_base_curent(float exp_sped_rpm)
     /*设置转速期望值*/
     speed_loop_pid.exp_v = exp_sped_rpm;
 
-    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 10)!= pdPASS )
+    if ( xQueueReceive(g_motor0_mech_rpm_mailbox, &m0_mch_rpm, 10)!= pdPASS )
     {
         ESP_LOGW(
             TAG,
-            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
-            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+            "g_motor0_mech_rpm_mailbox recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_rpm_mailbox),
+            uxQueueMessagesWaiting(g_motor0_mech_rpm_mailbox)
         );
     }
     // if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
@@ -1091,7 +1091,7 @@ static void foc_task(void *arg)
                 }
 
                 case 10:{/* 20KHZ/10= 2KHZ*/
-                    motor_exp_pos_deg =108.0f;
+                    motor_exp_pos_deg =185.0f;
                     vfoc_postion_loop(motor_exp_pos_deg);
                     freq_cnt = 0;
                     break;
