@@ -240,7 +240,7 @@ void vfoc_postion_loop(float exp_postion_deg)
     postion_loop_pid.err_v = angle_error_deg(postion_loop_pid.exp_v,postion_loop_pid.now_v);
 
     postion_loop_pid.kp = 0.15f;/**/
-    postion_loop_pid.ki = 0.0f;
+    postion_loop_pid.ki = 0.05f;
     postion_loop_pid.kd = 0.0035f;
 
     postion_loop_pid.ki_out_max = +UQ_LIMIT;

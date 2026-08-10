@@ -41,8 +41,12 @@ void vfoc_pid_calt(vfoc_pid_t *pid)
     /*比例部分: KP*当前误差值*/
     pid->kp_out = (pid->kp * pid->err_v);
 
-    /*积分部分：先累加误差 ,当超过当前值超过期望值，积分部分就起负反馈作用*/
-    pid->ki_integral += (pid->err_v * pid->pid_dt);
+    if ( fabs(pid->pid_out) < pid->pid_out_max)/*防止积分饱和*/
+    {
+        /*积分部分：先累加误差 ,当超过当前值超过期望值，积分部分就起负反馈作用*/
+        pid->ki_integral += (pid->err_v * pid->pid_dt);
+    }
+
     
     /* 计算积分输出 */
     pid->ki_out = (pid->ki * pid->ki_integral);
