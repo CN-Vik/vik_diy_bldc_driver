@@ -375,13 +375,13 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*设置转速期望值*/
     speed_loop_pid.exp_v = exp_sped_rpm;
 
-    if ( xQueueReceive(g_motor0_mech_rpm_mailbox, &m0_mch_rpm, 5)!= pdPASS )
+    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 5)!= pdPASS )
     {
         ESP_LOGW(
             TAG,
-            "g_motor0_mech_rpm_mailbox recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_rpm_mailbox),
-            uxQueueMessagesWaiting(g_motor0_mech_rpm_mailbox)
+            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
         );
     }
     // if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
@@ -391,13 +391,14 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
-    speed_loop_pid.kp = 0.0098f;/*0.0155f*/
-    speed_loop_pid.ki = 0.051f;
+    speed_loop_pid.kp = 0.0050f;/*0.0155f*/
+    speed_loop_pid.ki = 0.095f;
+    // speed_loop_pid.ki = 0.0f;
     speed_loop_pid.kd = 0.0f;
 
     speed_loop_pid.ki_out_max = +UQ_LIMIT;
     speed_loop_pid.ki_out_min = -UQ_LIMIT;
-
+    speed_loop_pid.ki_sep_err_thr = 150.0f;
     speed_loop_pid.pid_out_max = +UQ_LIMIT;
     speed_loop_pid.pid_out_min = -UQ_LIMIT;
 
@@ -413,15 +414,15 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
         // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
-        static float temp_uq = 0.0f;
-        temp_uq+=0.001f;
-        if ( temp_uq>=6.5f )
+        static float temp_uq = -6.5f;
+        temp_uq+=0.0001f;
+        if ( temp_uq>=0.0f )
         {
-            temp_uq=0.0f;
+            temp_uq=-6.5f;
         }
         curent_loop_park.Uq = temp_uq;
         // curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Uq = +3.0f;
+        // curent_loop_park.Uq = +3.0f;
         curent_loop_park.Ud = 0.0f;
         
     #endif
@@ -464,7 +465,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
             ESP_LOGI(
                 TAG,
-                "vfoc_sped: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f \r\n",
+                "vfoc_sped: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f \r\n",
                 speed_loop_pid.exp_v,//0
                 speed_loop_pid.now_v,//1
                 speed_loop_pid.err_v,
@@ -473,8 +474,8 @@ void vfoc_speed_loop(float exp_sped_rpm)
                 speed_loop_pid.ki_integral,//3
                 speed_loop_pid.pid_dt,//4
                 speed_loop_pid.ki_out,//5
-                speed_loop_pid.pid_out/*speed_pid_out*/
-                // curent_loop_park.Uq
+                speed_loop_pid.pid_out,/*speed_pid_out*/
+                curent_loop_park.Uq
                 // park_temp.iq
             );
 
@@ -541,13 +542,13 @@ float vfoc_speed_loop_base_curent(float exp_sped_rpm)
     /*设置转速期望值*/
     speed_loop_pid.exp_v = exp_sped_rpm;
 
-    if ( xQueueReceive(g_motor0_mech_rpm_mailbox, &m0_mch_rpm, 10)!= pdPASS )
+    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 10)!= pdPASS )
     {
         ESP_LOGW(
             TAG,
-            "g_motor0_mech_rpm_mailbox recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_rpm_mailbox),
-            uxQueueMessagesWaiting(g_motor0_mech_rpm_mailbox)
+            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
+            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
         );
     }
     // if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
@@ -1031,6 +1032,8 @@ static void foc_task(void *arg)
     float iq_ref = 0.0;
 
     uint16_t freq_cnt = 0;
+    uint16_t freq_1KHZ_cnt = 0;
+    uint16_t freq_200HZ_cnt = 0;
 
     while (1)
     {
@@ -1065,35 +1068,29 @@ static void foc_task(void *arg)
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
         {/*已经进行了电角度零点对齐*/
 
-            static uint32_t run_cnt;
-            if ((run_cnt++)>=(20*1000*3))
-            {
-                run_cnt = 0;
-                motor_exp_rpm+=100.0f;
-                if (motor_exp_rpm>=(700.0f))
-                {
-                    motor_exp_rpm=100.0f;
-                }
+            // static uint32_t run_cnt;
+            // if ((run_cnt++)>=(20*1000*3))
+            // {
+            //     run_cnt = 0;
+            //     motor_exp_rpm+=100.0f;
+            //     if (motor_exp_rpm>=(700.0f))
+            //     {
+            //         motor_exp_rpm=100.0f;
+            //     }
                 
-            }
+            // }
             
-            switch ((++freq_cnt))
+            switch ((++freq_1KHZ_cnt))
             {
-                case 2:{/* 20KHZ/2= 10KHZ*/
+                case 20:{/* 20KHZ/2= 10KHZ*/
 
                     #if (VFOC_CURENT_LOOP_EN == 1)
                         // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
                     #else
-                        // vfoc_speed_loop(motor_exp_rpm);
+                        motor_exp_rpm=300.0f;
+                        vfoc_speed_loop(motor_exp_rpm);
                     #endif
-
-                    break;
-                }
-
-                case 10:{/* 20KHZ/10= 2KHZ*/
-                    motor_exp_pos_deg =185.0f;
-                    vfoc_postion_loop(motor_exp_pos_deg);
-                    freq_cnt = 0;
+                    freq_1KHZ_cnt = 0;
                     break;
                 }
                     
@@ -1102,6 +1099,21 @@ static void foc_task(void *arg)
                 }
             }
 
+
+
+            switch ((++freq_200HZ_cnt))
+            {
+                case 100:{/* 20KHZ/100= 200HZ*/
+                    motor_exp_pos_deg =185.0f;
+                    // vfoc_postion_loop(motor_exp_pos_deg);
+                    freq_200HZ_cnt = 0;
+                    break;
+                }
+                    
+                default:{
+                    break;
+                }
+            }
 
             #if (VFOC_CURENT_LOOP_EN == 1)/*20KHZ运行*/
                 // iq_ref = 0.3f;

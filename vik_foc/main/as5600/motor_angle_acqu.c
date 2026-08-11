@@ -1255,7 +1255,7 @@ float get_motor_rpm_by_angle(float w_mech)
 static void motor_get_angle_task(void *arg)
 {
     float angle = 0.0f;
-    float last_angle = 0.0f;
+    // float last_angle = 0.0f;
     float m0_mech_rpm = 0.0f;
     float last_m0_mech_rpm = 0.0f;
 
@@ -1279,10 +1279,9 @@ static void motor_get_angle_task(void *arg)
             /*
              * 设置 VFOC 的机械角度
              */
-            angle = current_lpf(angle,last_angle);
-            last_angle = angle;
-
-            set_vfoc_theta_m_deg(angle);
+            // angle = current_lpf(angle,last_angle);
+            // last_angle = angle;
+            set_vfoc_theta_m_deg(angle);/*电角度计算需要此机械角度变量值*/
 
             //展开角度
             angle_cont = angle_unwrap_update(
@@ -1304,9 +1303,9 @@ static void motor_get_angle_task(void *arg)
             // set_vfoc_mech_w( pll.omega );/*计算设置，机械角速度*/
             // ========== 队列发送核心代码 ==========
             // 队列深度10，满了直接丢弃本次转速，不阻塞任务
-            // xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
+            xQueueSend(g_motor0_mech_rpm_queue, &m0_mech_rpm, 0);
             // 邮箱：覆盖写入，永远写最新值，不会阻塞，timeout写0
-            xQueueOverwrite( g_motor0_mech_rpm_mailbox, &m0_mech_rpm );
+            // xQueueOverwrite( g_motor0_mech_rpm_mailbox, &m0_mech_rpm );
 
             xQueueOverwrite( g_motor0_mech_deg_mailbox, &angle );
             // xQueueSend(g_motor0_mech_deg_queue, &angle, 0);/*发送机械角度值*/

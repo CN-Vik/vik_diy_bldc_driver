@@ -247,7 +247,7 @@ void set_vfoc_mech_rpm(float mech_rm)
 {
     vfoc_m0_dt.motor_drv_val.mech_rpm = mech_rm;
 
-#if 1
+#if 0
     static uint32_t log_cnt = 0;
     
     if ((log_cnt++)>100)

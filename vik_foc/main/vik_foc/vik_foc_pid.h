@@ -37,6 +37,7 @@ typedef struct
     float last_err_v;         /* 上一次误差 */
 
     float ki_integral;            /* 积分误差累计 */
+    float ki_sep_err_thr;          /* 积分分离的阈值 , ki_integral_speartion_err_threshold*/
     float kd_parm;           /* 微分参数 */
 
     float kp_out;

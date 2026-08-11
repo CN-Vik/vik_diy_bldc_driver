@@ -159,11 +159,11 @@ void rtos_queue_creat(void)
         ESP_LOGE(TAG, "创建 g_motor0_mech_rpm_queue 失败");
     }
 
-    g_motor0_mech_deg_queue = xQueueCreate(10, sizeof(float));
-    if (g_motor0_mech_deg_queue == NULL)
-    {
-        ESP_LOGE(TAG, "创建 g_motor0_mech_deg_queue 失败");
-    }
+    // g_motor0_mech_deg_queue = xQueueCreate(10, sizeof(float));
+    // if (g_motor0_mech_deg_queue == NULL)
+    // {
+    //     ESP_LOGE(TAG, "创建 g_motor0_mech_deg_queue 失败");
+    // }
 
     // /*
     //  * UART打印队列：

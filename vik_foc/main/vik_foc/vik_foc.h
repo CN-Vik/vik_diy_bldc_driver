@@ -280,7 +280,6 @@ bool get_zero_theta_e_calib_flag(void);
 void set_zero_theta_e_calib_flag(bool flag);
 void set_theta_e_offset_mech(float mech_offset);
 float get_theta_e_offset_mech(void);
-float get_vfoc_mech_rpm(void);
 float limit_float(float x, float min, float max);
 void set_vfoc_theta_e_rad(float e_value);
 float get_vfoc_theta_e_rad(float m_angle);
