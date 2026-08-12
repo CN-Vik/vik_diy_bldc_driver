@@ -1069,13 +1069,13 @@ static void foc_task(void *arg)
         {/*已经进行了电角度零点对齐*/
 
             static uint32_t run_cnt;
-            if ((run_cnt++)>=(20*1000*1))
+            if ((run_cnt++)>=(20*100*1))
             {
                 run_cnt = 0;
-                motor_exp_rpm+=10.0f;
+                motor_exp_rpm+=1.0f;
                 if (motor_exp_rpm>=(650.0f))
                 {
-                    motor_exp_rpm=10.0f;
+                    motor_exp_rpm=1.0f;
                 }
                 
             }
