@@ -1068,17 +1068,17 @@ static void foc_task(void *arg)
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
         {/*已经进行了电角度零点对齐*/
 
-            // static uint32_t run_cnt;
-            // if ((run_cnt++)>=(20*1000*3))
-            // {
-            //     run_cnt = 0;
-            //     motor_exp_rpm+=100.0f;
-            //     if (motor_exp_rpm>=(700.0f))
-            //     {
-            //         motor_exp_rpm=100.0f;
-            //     }
+            static uint32_t run_cnt;
+            if ((run_cnt++)>=(20*1000*1))
+            {
+                run_cnt = 0;
+                motor_exp_rpm+=10.0f;
+                if (motor_exp_rpm>=(650.0f))
+                {
+                    motor_exp_rpm=10.0f;
+                }
                 
-            // }
+            }
             
             switch ((++freq_1KHZ_cnt))
             {
@@ -1087,7 +1087,7 @@ static void foc_task(void *arg)
                     #if (VFOC_CURENT_LOOP_EN == 1)
                         // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
                     #else
-                        motor_exp_rpm=300.0f;
+                        // motor_exp_rpm=300.0f;
                         vfoc_speed_loop(motor_exp_rpm);
                     #endif
                     freq_1KHZ_cnt = 0;
