@@ -43,13 +43,9 @@ void vfoc_pid_calt(vfoc_pid_t *pid)
 
     if ( fabs(pid->pid_out) < pid->pid_out_max)/*防止积分饱和*/
     {
-        /*积分分离操作，误差太大了不加入积分，防止过冲，积分环节仅仅是补偿作用*/
-        if(fabs(pid->err_v) < pid->ki_sep_err_thr)
-        {
-            /*积分部分：先累加误差 ,当超过当前值超过期望值，积分部分就起负反馈作用*/
-            pid->ki_integral += (pid->err_v * pid->pid_dt);
-        }
-
+        /*积分部分：先累加误差 ,当超过当前值超过期望值，积分部分就起负反馈作用*/
+        pid->ki_integral += (pid->err_v * pid->pid_dt);
+        
     }
 
     

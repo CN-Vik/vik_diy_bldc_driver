@@ -392,13 +392,13 @@ void vfoc_speed_loop(float exp_sped_rpm)
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
     speed_loop_pid.kp = 0.0050f;/*0.0155f*/
-    speed_loop_pid.ki = 0.095f;
+    speed_loop_pid.ki = 0.035f;
     // speed_loop_pid.ki = 0.0f;
     speed_loop_pid.kd = 0.0f;
 
     speed_loop_pid.ki_out_max = +UQ_LIMIT;
     speed_loop_pid.ki_out_min = -UQ_LIMIT;
-    speed_loop_pid.ki_sep_err_thr = 150.0f;
+    speed_loop_pid.ki_sep_err_thr = 200.0f;
     speed_loop_pid.pid_out_max = +UQ_LIMIT;
     speed_loop_pid.pid_out_min = -UQ_LIMIT;
 
