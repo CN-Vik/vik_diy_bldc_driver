@@ -81,6 +81,6 @@ void vfoc_pid_calt(vfoc_pid_t *pid)
         pid->pid_out = pid->pid_out_min;
     }
     
-
+    pid->last_err_v = pid->err_v;
 }
 

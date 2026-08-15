@@ -391,20 +391,20 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
 
-    speed_loop_pid.kp = 0.0050f;/*0.0155f*/
-    speed_loop_pid.ki = 0.035f;
+    speed_loop_pid.kp = 0.0040f;/*0.0155f*/
+    speed_loop_pid.ki = 0.05f;
     // speed_loop_pid.ki = 0.0f;
     speed_loop_pid.kd = 0.0f;
 
     speed_loop_pid.ki_out_max = +UQ_LIMIT;
     speed_loop_pid.ki_out_min = -UQ_LIMIT;
-    speed_loop_pid.ki_sep_err_thr = 200.0f;
+    // speed_loop_pid.ki_sep_err_thr = 200.0f;
     speed_loop_pid.pid_out_max = +UQ_LIMIT;
     speed_loop_pid.pid_out_min = -UQ_LIMIT;
 
     vfoc_pid_calt(&speed_loop_pid);
 
-    speed_loop_pid.last_err_v = speed_loop_pid.err_v;
+    // speed_loop_pid.last_err_v = speed_loop_pid.err_v;
 
     #if 1
         // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
