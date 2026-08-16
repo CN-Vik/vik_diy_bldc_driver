@@ -50,9 +50,8 @@ PWM频率：20kHz
 compare范围：大约 0 ~ 500
 占空比：compare / 500
 */
-#define M0_PWM_PERIOD_TICKS    (M0_PWM_RES_HZ / (M0_PWM_FREQ_HZ)) // 1000
-// #define M0_PWM_PEAK_TICKS       (M0_PWM_PERIOD_TICKS / 2)        // 500，中心对齐模式使用
-
+#define M0_PWM_PERIOD_TICKS    ((M0_PWM_RES_HZ / (M0_PWM_FREQ_HZ))) // 1000
+#define M0_PWM_MAX_CMPV         ((M0_PWM_RES_HZ / (M0_PWM_FREQ_HZ))/2) /*中心对齐模式下，最大计数值是周期值的一半*/
 
 // 死区时间：1μs = 10个tick（10MHz分辨率，1tick=0.1μs）
 #define M0_DEAD_TIME_TICKS  10
@@ -61,8 +60,8 @@ compare范围：大约 0 ~ 500
  * FD6287 是 bootstrap 高边驱动。
  * 初期不建议 pwm_duty 到 0% 或 100%。
  */
-#define M0_DUTY_MIN                0.02f
-#define M0_DUTY_MAX                0.98f
+#define M0_DUTY_MIN                0.001f
+#define M0_DUTY_MAX                0.999f
 
 
 #define GPTIMER_US(us)          (us)

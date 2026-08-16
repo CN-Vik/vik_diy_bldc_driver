@@ -84,16 +84,14 @@ static uint32_t m0_duty_to_compare(float pwm_duty)
 {
     pwm_duty = m0_limit_float(pwm_duty, M0_DUTY_MIN, M0_DUTY_MAX);
 
-    return (uint32_t)(pwm_duty * (float)M0_PWM_PERIOD_TICKS);
+    return (uint32_t) ((pwm_duty * (float)M0_PWM_MAX_CMPV));
 }
 
 
 
 esp_err_t motor_set_pwm_duty(float duty_u, float duty_v, float duty_w)
 {
-    uint32_t cmp_u;
-    uint32_t cmp_v;
-    uint32_t cmp_w;
+    uint32_t cmp_uvw[3] = {0};
 
     if ((s_m0_pwm.cmp[0] == NULL) ||
         (s_m0_pwm.cmp[1] == NULL) ||
@@ -110,36 +108,64 @@ esp_err_t motor_set_pwm_duty(float duty_u, float duty_v, float duty_w)
             cnt = 0;
             ESP_LOGI(
                 TAG,
-                "[motor_set_pwm_duty]: %.3f, %.3f, %.3f\r\n",
+                "duty:%.3f,%.3f,%.3f, cmp:%lu,%lu,%lu,max=%d\r\n",
                 duty_u,
                 duty_v,
-                duty_w
+                duty_w,
+
+                cmp_u,
+                cmp_v,
+                cmp_w,
+
+                (int)(M0_PWM_PERIOD_TICKS)
             );
         }
     #endif
 
-    cmp_u = m0_duty_to_compare(duty_u);
-    cmp_v = m0_duty_to_compare(duty_v);
-    cmp_w = m0_duty_to_compare(duty_w);
+    cmp_uvw[0] = m0_duty_to_compare(duty_u);
+    cmp_uvw[1] = m0_duty_to_compare(duty_v);
+    cmp_uvw[2] = m0_duty_to_compare(duty_w);
 
     #if 0
         static uint32_t cnt = 0;
-
         if ((cnt++)>=50)
         {
             cnt = 0;
             ESP_LOGI(
                 TAG,
-                "[motor_set_pwm_duty]: %lu, %lu, %lu\r\n",
+                "duty:%.3f,%.3f,%.3f, cmp:%lu,%lu,%lu,max=%d\r\n",
+                duty_u,
+                duty_v,
+                duty_w,
+
                 cmp_u,
                 cmp_v,
-                cmp_w
+                cmp_w,
+
+                (int)(M0_PWM_MAX_CMPV)
             );
         }
     #endif
-    mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[0], cmp_u);
-    mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[1], cmp_v);
-    mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[2], cmp_w);
+
+
+    esp_err_t ret;
+
+    for (int i = 0; i < 3; i++)
+    {
+        ret = mcpwm_comparator_set_compare_value(s_m0_pwm.cmp[i], cmp_uvw[i]);
+        if(ret != ESP_OK)
+        {
+            ESP_LOGE(
+                TAG,
+                "CMP_ERROR(%d),cmp=%lu,max=%d \r\n",
+                i,
+                cmp_uvw[i],
+                M0_PWM_MAX_CMPV
+            );
+        }
+
+    }
+    
 
     return ESP_OK;
 }
@@ -173,14 +199,14 @@ esp_err_t esp32_mcpwm_init(void)
         占空比：compare / 1000
         */
         .period_ticks = M0_PWM_PERIOD_TICKS,/*1000*/
-        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,/*单向 向上递增模式*/
+        .count_mode = MCPWM_TIMER_COUNT_MODE_UP_DOWN,/* 中心对齐模式 */
     };
 
     ESP_ERROR_CHECK(mcpwm_new_timer(&mcptimer_basic_cfg, &s_m0_pwm.timer));
 
-    /*单项递增计数模式*/
+    /*中心对齐计数模式*/
     mcpwm_timer_event_callbacks_t mctimer_cbs = {
-        .on_empty = mcpwm_timer_isr,/*单向PWM，每个PWM周期开始触发*/
+        .on_full = mcpwm_timer_isr,/*单向PWM，每个PWM周期开始触发*/
     };
 
     ESP_ERROR_CHECK(
@@ -239,26 +265,28 @@ esp_err_t esp32_mcpwm_init(void)
                         )
         );
 
-        /* Timer计数到0，输出High */
+
+        // 1. 向上计数，碰到 cmp ➔ 拉低
         ESP_ERROR_CHECK(
-            mcpwm_generator_set_action_on_timer_event(
-                s_m0_pwm.gen[i],
-                MCPWM_GEN_TIMER_EVENT_ACTION(
-                    MCPWM_TIMER_DIRECTION_UP,
-                    MCPWM_TIMER_EVENT_EMPTY,
-                    MCPWM_GEN_ACTION_HIGH
+            mcpwm_generator_set_action_on_compare_event(
+                s_m0_pwm.gen[i],// MCPWM生成器句柄，对应某一路PWM输出通道
+                MCPWM_GEN_COMPARE_EVENT_ACTION(
+                    MCPWM_TIMER_DIRECTION_UP, // 触发条件：计数器【向上计数】方向
+                    s_m0_pwm.cmp[i], // 比较VALUE
+                    MCPWM_GEN_ACTION_LOW // 触发后动作：PWM输出引脚置低电平
                 )
             )
         );
 
-        /* Timer计数到Compare，输出Low */
+
+        // 2. 向下计数，碰到 cmp ➔ 拉高
         ESP_ERROR_CHECK(
             mcpwm_generator_set_action_on_compare_event(
-                s_m0_pwm.gen[i],
+                s_m0_pwm.gen[i],// MCPWM生成器句柄，对应某一路PWM输出通道
                 MCPWM_GEN_COMPARE_EVENT_ACTION(
-                    MCPWM_TIMER_DIRECTION_UP,
-                    s_m0_pwm.cmp[i],
-                    MCPWM_GEN_ACTION_LOW
+                    MCPWM_TIMER_DIRECTION_DOWN,// 触发条件：计数器【向下计数】方向
+                    s_m0_pwm.cmp[i],// 使用同一个比较器实例（占空比阈值）
+                    MCPWM_GEN_ACTION_HIGH // 触发后动作：PWM输出引脚置高电平
                 )
             )
         );
@@ -266,7 +294,7 @@ esp_err_t esp32_mcpwm_init(void)
         ESP_ERROR_CHECK(
             mcpwm_comparator_set_compare_value(
                 s_m0_pwm.cmp[i],
-                M0_PWM_PERIOD_TICKS-1
+                0
             )
         );
 
@@ -283,7 +311,7 @@ esp_err_t esp32_mcpwm_init(void)
     );
 
     ESP_LOGI(TAG,
-             "M0 MCPWM init done, freq=%dHz, period_ticks=%d\r\n",
+             "M0_MCPWM_init_done, PWM_freq=%dHz, period_ticks=%d\r\n",
              M0_PWM_FREQ_HZ,
              M0_PWM_PERIOD_TICKS
     );

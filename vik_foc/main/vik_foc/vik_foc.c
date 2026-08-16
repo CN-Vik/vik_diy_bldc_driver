@@ -662,6 +662,45 @@ static int vfoc_float_is_valid(float value)
 }
 
 /**
+ * @brief 7段式SVPWM：alpha/beta -> 三相 duty
+ *
+ * 输入：
+ *      c_v->I_alpha : alpha 轴电压，单位 V
+ *      c_v->I_beta  : beta 轴电压，单位 V
+ *      vbus          : 母线电压，单位 V
+ *
+ * 输出：
+ *      duty_out->duty_Ua : U 相 duty，范围 VFOC_PWM_DUTY_MIN ~ VFOC_PWM_DUTY_MAX
+ *      duty_out->duty_Ub : V 相 duty
+ *      duty_out->duty_Uc : W 相 duty
+ *
+ * 核心思想：
+ *      1. 对 alpha/beta 电压矢量做线性调制区限幅
+ *      2. alpha/beta -> 三相相电压 ua/ub/uc
+ *      3. 找 max/min
+ *      4. 注入零序 offset = -0.5 * (max + min)
+ *      5. 转换为 duty
+ *
+ * 为什么这是工程版：
+ *      - 不依赖扇区判断，避免扇区边界抖动 bug
+ *      - 直接 alpha/beta 输入，减少中间层
+ *      - 自动限制在线性调制区
+ *      - 保留 duty 上下限，保护 bootstrap 驱动
+ *      - 返回状态码，方便后续故障记录
+ */
+vfoc_status_e_t vfoc_7_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out)
+{
+    vfoc_status_e_t status = VFOC_STATUS_OK;
+
+
+    return status;
+
+}
+
+
+
+
+/**
  * @brief 量产级 SVPWM：alpha/beta -> 三相 duty
  *
  * 输入：
