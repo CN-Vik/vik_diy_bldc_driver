@@ -20,6 +20,7 @@
  */
 #define M0_PWM_FREQ_HZ              (20 *(1000))
 #define M0_PWM_TASK_T               ((1.0f/M0_PWM_FREQ_HZ)*(1000000.0f))
+#define M0_PWM_T_S                  ((1.0f/M0_PWM_FREQ_HZ))
 
 /*
  * MCPWM 分辨率 10MHz。

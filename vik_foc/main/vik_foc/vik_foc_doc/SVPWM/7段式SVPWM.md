@@ -27,7 +27,9 @@
 $$
 \begin{cases}
 U_1 = U_\beta \
+\
 U_2 = \frac{\sqrt{3}U_\alpha - U_\beta}{2} \
+\
 U_3 = \frac{-\sqrt{3}U_\alpha - U_\beta}{2}
 \end{cases}
 $$
@@ -77,7 +79,9 @@ $$ Ty = \frac{Ty}{Tx+Ty} \times T_{pwm} $$
 $$
 \begin{cases}
 T_a = \frac{T_{pwm} + Tx + Ty}{4} \
+\
 T_b = T_a - \frac{Tx}{2} \
+\
 T_c = T_b - \frac{Ty}{2}
 \end{cases}
 $$

@@ -14,7 +14,7 @@
 #include "stdbool.h"
 #include "esp32_flas_nvs.h"
 #include <math.h>
-
+#include "motor_cfg_pwm.h"
 
 static const char *TAG = "vik_foc";
 
@@ -688,10 +688,127 @@ static int vfoc_float_is_valid(float value)
  *      - 保留 duty 上下限，保护 bootstrap 驱动
  *      - 返回状态码，方便后续故障记录
  */
-vfoc_status_e_t vfoc_7_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out)
+vfoc_status_e_t vfoc_7segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out)
 {
     vfoc_status_e_t status = VFOC_STATUS_OK;
+    
+    float U1, U2, U3;
+    uint8_t A, B, C, N, sector;
+    float K;
+    float Tx, Ty;
+    float Ta, Tb, Tc;
+    float temp;
 
+    if (c_v == NULL)
+    {
+        return VFOC_STATUS_NULL_PTR;
+    }
+
+
+    // ========== 第1步：计算3个中间量，判断扇区 ==========
+    U1 = c_v->I_beta;
+    U2 = (SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
+    U3 = (-SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
+
+    // 正负号判断
+    A = (U1 > 0.0f) ? 1 : 0;
+    B = (U2 > 0.0f) ? 1 : 0;
+    C = (U3 > 0.0f) ? 1 : 0;
+
+    // 计算N值，查表得到扇区号(1~6)
+    N = A + 2*B + 4*C;
+    switch(N)
+    {
+        case 3:  sector = 1; break;
+        case 1:  sector = 2; break;
+        case 5:  sector = 3; break;
+        case 4:  sector = 4; break;
+        case 6:  sector = 5; break;
+        case 2:  sector = 6; break;
+        default: sector = 1; break; // 异常保护
+    }
+
+    // ========== 第2步：计算矢量作用时间Tx、Ty ==========
+    K = SQRT3 * M0_PWM_T_S / vbus; // 公共系数
+
+    switch(sector)
+    {
+        case 1: Tx = U2 * K;  Ty = U1 * K;  break;
+        case 2: Tx = -U2 * K; Ty = -U3 * K; break;
+        case 3: Tx = U1 * K;  Ty = -U3 * K; break;
+        case 4: Tx = -U1 * K; Ty = -U2 * K; break;
+        case 5: Tx = U3 * K;  Ty = U2 * K;  break;
+        case 6: Tx = -U3 * K; Ty = -U1 * K; break;
+        default:Tx = 0; Ty = 0; break;
+    }
+
+    // 过调制处理：时间超了就等比例压缩
+    if((Tx + Ty) > M0_PWM_T_S)
+    {
+        temp = Tx + Ty;
+        Tx = (Tx / temp) * M0_PWM_T_S;
+        Ty = (Ty / temp) * M0_PWM_T_S;
+    }
+
+    // ========== 第3步：七段式基准占空比计算 ==========
+    Ta = (M0_PWM_T_S + Tx + Ty) * 0.25f;  // 占空比最大的相
+    Tb = Ta - (Tx * 0.5f);             // 中间的相
+    Tc = Tb - (Ty * 0.5f);             // 占空比最小的相
+
+    if (duty_out == NULL)
+    {
+        return VFOC_STATUS_NULL_PTR;
+    }
+
+    // ========== 第4步：按扇区分配给ABC三相 ==========
+    switch(sector)
+    {
+        case 1:
+            duty_out->duty_Ua = (uint16_t)Ta;  // A相
+            duty_out->duty_Ub = (uint16_t)Tb;  // B相
+            duty_out->duty_Uc = (uint16_t)Tc;  // C相
+            break;
+        case 2:
+            duty_out->duty_Ua = (uint16_t)Tb;
+            duty_out->duty_Ub = (uint16_t)Ta;
+            duty_out->duty_Uc = (uint16_t)Tc;
+            break;
+        case 3:
+            duty_out->duty_Ua = (uint16_t)Tc;
+            duty_out->duty_Ub = (uint16_t)Ta;
+            duty_out->duty_Uc = (uint16_t)Tb;
+            break;
+        case 4:
+            duty_out->duty_Ua = (uint16_t)Tc;
+            duty_out->duty_Ub = (uint16_t)Tb;
+            duty_out->duty_Uc = (uint16_t)Ta;
+            break;
+        case 5:
+            duty_out->duty_Ua = (uint16_t)Tb;
+            duty_out->duty_Ub = (uint16_t)Tc;
+            duty_out->duty_Uc = (uint16_t)Ta;
+            break;
+        case 6:
+            duty_out->duty_Ua = (uint16_t)Ta;
+            duty_out->duty_Ub = (uint16_t)Tc;
+            duty_out->duty_Uc = (uint16_t)Tb;
+            break;
+        default:
+            duty_out->duty_Ua = M0_PWM_T_S/2;
+            duty_out->duty_Ub = M0_PWM_T_S/2;
+            duty_out->duty_Uc = M0_PWM_T_S/2;
+            break;
+    }
+
+
+    /*
+     * 最终 duty 保护。
+     * 算法前面已经做过线性区缩放，正常不会碰到这里。
+     * 这里是最后一道保险。
+     */
+    duty_out->duty_Ua = vfoc_limit(duty_out->duty_Ua, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+    duty_out->duty_Ub = vfoc_limit(duty_out->duty_Ub, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+    duty_out->duty_Uc = vfoc_limit(duty_out->duty_Uc, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
 
     return status;
 
@@ -701,7 +818,7 @@ vfoc_status_e_t vfoc_7_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_
 
 
 /**
- * @brief 量产级 SVPWM：alpha/beta -> 三相 duty
+ * @brief 量产级 SVPWM(零序注入法)：alpha/beta -> 三相 duty
  *
  * 输入：
  *      c_v->I_alpha : alpha 轴电压，单位 V
@@ -973,11 +1090,17 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
      * 5. SVPWM：
      *      Ualpha/Ubeta -> duty_Ua/duty_Ub/duty_Uc
      */
-    svpwm_status = vfoc_svpwm_calc_duty_uab(
-                        &l_temp_clark_v,
-                        vbus,
-                        &vfoc_m0_dt.motor_drv_val.pwm_duty_val
-                   );
+    // svpwm_status = vfoc_svpwm_calc_duty_uab(
+    //     &l_temp_clark_v,
+    //     vbus,
+    //     &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+    // );
+    svpwm_status = vfoc_7segment_svpwm_calc(
+        &l_temp_clark_v,
+        vbus,
+        &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+    );
+
 
     /*
      * 量产代码里，不建议 1ms 打一次日志。
