@@ -448,7 +448,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
     #endif
 
     
-    #if 1
+    #if 0
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>10 ) 
@@ -1087,7 +1087,7 @@ static void foc_task(void *arg)
                     #if (VFOC_CURENT_LOOP_EN == 1)
                         // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
                     #else
-                        // motor_exp_rpm=300.0f;
+                        motor_exp_rpm=300.0f;
                         vfoc_speed_loop(motor_exp_rpm);
                     #endif
                     freq_1KHZ_cnt = 0;

@@ -317,6 +317,7 @@ vfoc_status_e_t vfoc_svpwm_calc_duty_uab(const clark_parm_t *c_v,
 
 vfoc_status_e_t vfoc_7segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out);
 
+vfoc_status_e_t vfoc_5segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out);
 
 /*
  * 开环 SVPWM 运行接口。

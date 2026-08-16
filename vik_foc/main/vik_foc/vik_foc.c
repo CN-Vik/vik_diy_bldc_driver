@@ -816,6 +816,173 @@ vfoc_status_e_t vfoc_7segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
 
 
 
+/**
+ * @brief 5段式SVPWM：alpha/beta -> 三相 duty
+ *
+ * 输入：
+ *      c_v->I_alpha : alpha 轴电压，单位 V
+ *      c_v->I_beta  : beta 轴电压，单位 V
+ *      vbus          : 母线电压，单位 V
+ *
+ * 输出：
+ *      duty_out->duty_Ua : U 相 duty，范围 VFOC_PWM_DUTY_MIN ~ VFOC_PWM_DUTY_MAX
+ *      duty_out->duty_Ub : V 相 duty
+ *      duty_out->duty_Uc : W 相 duty
+ *
+ * 核心思想：
+ *      1. 对 alpha/beta 电压矢量做线性调制区限幅
+ *      2. alpha/beta -> 三相相电压 ua/ub/uc
+ *      3. 找 max/min
+ *      4. 注入零序 offset = -0.5 * (max + min)
+ *      5. 转换为 duty
+ *
+ * 为什么这是工程版：
+ *      - 不依赖扇区判断，避免扇区边界抖动 bug
+ *      - 直接 alpha/beta 输入，减少中间层
+ *      - 自动限制在线性调制区
+ *      - 保留 duty 上下限，保护 bootstrap 驱动
+ *      - 返回状态码，方便后续故障记录
+ */
+vfoc_status_e_t vfoc_5segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out)
+{
+    vfoc_status_e_t status = VFOC_STATUS_OK;
+    
+    float U1, U2, U3;
+    uint8_t A, B, C, N, sector;
+    float K;
+    float Tx, Ty;
+    float Ta, Tb, Tc;
+    float temp;
+
+    if (c_v == NULL)
+    {
+        return VFOC_STATUS_NULL_PTR;
+    }
+
+
+    // ========== 第1步：计算3个中间量，判断扇区 ==========
+    U1 = c_v->I_beta;
+    U2 = (SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
+    U3 = (-SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
+
+    // 正负号判断
+    A = (U1 > 0.0f) ? 1 : 0;
+    B = (U2 > 0.0f) ? 1 : 0;
+    C = (U3 > 0.0f) ? 1 : 0;
+
+    // 计算N值，查表得到扇区号(1~6)
+    N = A + 2*B + 4*C;
+    switch(N)
+    {
+        case 3:  sector = 1; break;
+        case 1:  sector = 2; break;
+        case 5:  sector = 3; break;
+        case 4:  sector = 4; break;
+        case 6:  sector = 5; break;
+        case 2:  sector = 6; break;
+        default: sector = 1; break; // 异常保护
+    }
+
+    // ========== 第2步：计算矢量作用时间Tx、Ty ==========
+    K = SQRT3 * M0_PWM_T_S / vbus; // 公共系数
+
+    switch(sector)
+    {
+        case 1: Tx = U2 * K;  Ty = U1 * K;  break;
+        case 2: Tx = -U2 * K; Ty = -U3 * K; break;
+        case 3: Tx = U1 * K;  Ty = -U3 * K; break;
+        case 4: Tx = -U1 * K; Ty = -U2 * K; break;
+        case 5: Tx = U3 * K;  Ty = U2 * K;  break;
+        case 6: Tx = -U3 * K; Ty = -U1 * K; break;
+        default:Tx = 0; Ty = 0; break;
+    }
+
+    // 过调制处理：时间超了就等比例压缩
+    if((Tx + Ty) > M0_PWM_T_S)
+    {
+        temp = Tx + Ty;
+        Tx = (Tx / temp) * M0_PWM_T_S;
+        Ty = (Ty / temp) * M0_PWM_T_S;
+    }
+
+    // ========== 第3步：七段式基准占空比计算 ==========
+    Ta = (M0_PWM_T_S + Tx + Ty) * 0.25f;  // 占空比最大的相
+    Tb = Ta - (Tx * 0.5f);             // 中间的相
+    Tc = Tb - (Ty * 0.5f);             // 占空比最小的相
+
+    if (duty_out == NULL)
+    {
+        return VFOC_STATUS_NULL_PTR;
+    }
+
+    // ========== 【唯一和七段式不同的地方】五段式占空比分配 ==========
+    // 每个扇区钳位一相：钳位低则CCR=0，钳位高则CCR=T_pwm，该相全程不开关
+    // ========== 第4步：按扇区分配给ABC三相 ==========
+    switch(sector)
+    {
+        case 1: 
+            // 扇区1：C相钳位到低，零矢量用000
+            duty_out->duty_Ua = (uint16_t)(Tx + Ty);  // A相
+            duty_out->duty_Ub = (uint16_t)Ty;         // B相
+            duty_out->duty_Uc = 0;                    // C相 全程不开关
+            break;
+            
+        case 2: 
+            // 扇区2：B相钳位到高，零矢量用111
+            duty_out->duty_Ua = (uint16_t)(M0_PWM_T_S - Ty);      // A相
+            duty_out->duty_Ub = M0_PWM_T_S;                       // B相 全程不开关
+            duty_out->duty_Uc = (uint16_t)(M0_PWM_T_S - Tx - Ty); // C相
+            break;
+            
+        case 3: 
+            // 扇区3：A相钳位到低，零矢量用000
+            duty_out->duty_Ua = 0;                    // A相 全程不开关
+            duty_out->duty_Ub = (uint16_t)(Tx + Ty);  // B相
+            duty_out->duty_Uc = (uint16_t)Tx;         // C相
+            break;
+            
+        case 4: 
+            // 扇区4：C相钳位到高，零矢量用111
+            duty_out->duty_Ua = (uint16_t)Tx;         // A相
+            duty_out->duty_Ub = (uint16_t)(M0_PWM_T_S - Tx - Ty); // B相
+            duty_out->duty_Uc = M0_PWM_T_S;                // C相 全程不开关
+            break;
+            
+        case 5: 
+            // 扇区5：B相钳位到低，零矢量用000
+            duty_out->duty_Ua = (uint16_t)(M0_PWM_T_S - Tx - Ty); // A相
+            duty_out->duty_Ub = 0;                    // B相 全程不开关
+            duty_out->duty_Uc = (uint16_t)(Tx + Ty);  // C相
+            break;
+            
+        case 6: 
+            // 扇区6：A相钳位到高，零矢量用111
+            duty_out->duty_Ua = M0_PWM_T_S;                // A相 全程不开关
+            duty_out->duty_Ub = (uint16_t)(M0_PWM_T_S - Ty);  // B相
+            duty_out->duty_Uc = (uint16_t)(M0_PWM_T_S - Tx);  // C相
+            break;
+            
+        default:
+            duty_out->duty_Ua = M0_PWM_T_S / 2;
+            duty_out->duty_Ub = M0_PWM_T_S / 2;
+            duty_out->duty_Uc = M0_PWM_T_S / 2;
+            break;
+    }
+
+    /*
+     * 最终 duty 保护。
+     * 算法前面已经做过线性区缩放，正常不会碰到这里。
+     * 这里是最后一道保险。
+     */
+    duty_out->duty_Ua = vfoc_limit(duty_out->duty_Ua, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+    duty_out->duty_Ub = vfoc_limit(duty_out->duty_Ub, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+    duty_out->duty_Uc = vfoc_limit(duty_out->duty_Uc, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+
+    return status;
+
+}
+
+
 
 /**
  * @brief 量产级 SVPWM(零序注入法)：alpha/beta -> 三相 duty
@@ -1095,12 +1262,37 @@ void vfoc_open_loop_svpwm_run(float target_rpm,
     //     vbus,
     //     &vfoc_m0_dt.motor_drv_val.pwm_duty_val
     // );
-    svpwm_status = vfoc_7segment_svpwm_calc(
+
+    // svpwm_status = vfoc_7segment_svpwm_calc(
+    //     &l_temp_clark_v,
+    //     vbus,
+    //     &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+    // );
+    svpwm_status = vfoc_5segment_svpwm_calc(
         &l_temp_clark_v,
         vbus,
         &vfoc_m0_dt.motor_drv_val.pwm_duty_val
     );
 
+    #if 1
+
+        static uint32_t log_cnt = 0;
+        if ( (log_cnt++)>1 ) 
+        {
+            /*
+            * 这里打印的是 SVPWM 注入零序之后的三相电压。
+            * 注意：这个 sum 不一定等于 0。
+            */
+            ESP_LOGI(TAG,"SVPWM_UVW: %.4f,%.4f,%.4f \r\n",
+                    vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ua,
+                    vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ub,
+                    vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Uc
+            );
+
+            log_cnt = 0;
+        }
+
+    #endif
 
     /*
      * 量产代码里，不建议 1ms 打一次日志。
@@ -1173,13 +1365,53 @@ void vfoc_set_svpwm(float uq,
      * 5. SVPWM：
      *      Ualpha/Ubeta -> duty_Ua/duty_Ub/duty_Uc
      */
-    svpwm_status = vfoc_svpwm_calc_duty_uab( &l_temp_clark_v,
-                                             vbus,
-                                             &vfoc_m0_dt.motor_drv_val.pwm_duty_val
-    );
 
-    
     #if 0
+        svpwm_status = vfoc_svpwm_calc_duty_uab(
+            &l_temp_clark_v,
+            vbus,
+            &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+        );
+    #else 
+    
+        #if 1
+            svpwm_status = vfoc_7segment_svpwm_calc(
+                &l_temp_clark_v,
+                vbus,
+                &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+            );
+        #else        
+            svpwm_status = vfoc_5segment_svpwm_calc(
+                &l_temp_clark_v,
+                vbus,
+                &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+            );
+        #endif
+
+    #endif
+
+
+    #if 0
+
+        static uint32_t log_cnt = 0;
+        if ( (log_cnt++)>1 ) 
+        {
+            /*
+            * 这里打印的是 SVPWM 注入零序之后的三相电压。
+            * 注意：这个 sum 不一定等于 0。
+            */
+            ESP_LOGI(TAG,"SVPWM_UVW: %.4f,%.4f,%.4f \r\n",
+                    vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ua,
+                    vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ub,
+                    vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Uc
+            );
+
+            log_cnt = 0;
+        }
+
+    #endif
+    
+    #if 1
         static uint32_t log_cnt = 0; 
         if ( (log_cnt++)>100 ) 
         {
@@ -1203,6 +1435,7 @@ void vfoc_set_svpwm(float uq,
             log_cnt = 0;
         }
     #endif
+
     /*
      * 量产代码里，不建议 1ms 打一次日志。
      * 这里只在异常时打。

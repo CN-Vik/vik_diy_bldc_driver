@@ -20,8 +20,6 @@
  */
 #define M0_PWM_FREQ_HZ              (20 *(1000))
 #define M0_PWM_TASK_T               ((1.0f/M0_PWM_FREQ_HZ)*(1000000.0f))
-#define M0_PWM_T_S                  ((1.0f/M0_PWM_FREQ_HZ))
-
 /*
  * MCPWM 分辨率 10MHz。
 
@@ -53,6 +51,8 @@ compare范围：大约 0 ~ 500
 */
 #define M0_PWM_PERIOD_TICKS    ((M0_PWM_RES_HZ / (M0_PWM_FREQ_HZ))) // 1000
 #define M0_PWM_MAX_CMPV         ((M0_PWM_RES_HZ / (M0_PWM_FREQ_HZ))/2) /*中心对齐模式下，最大计数值是周期值的一半*/
+#define M0_PWM_T_S              ( (M0_PWM_RES_HZ / (M0_PWM_FREQ_HZ)) )  // M0_PWM_MAX_CMPV 
+
 
 // 死区时间：1μs = 10个tick（10MHz分辨率，1tick=0.1μs）
 #define M0_DEAD_TIME_TICKS  10
