@@ -321,7 +321,7 @@ void vfoc_postion_loop(float exp_postion_deg)
             //     TAG,
             //     "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f,  %.2f,%.2f\r\n",
             //     get_vfoc_theta_m_deg(),
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+            //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
             //     // get_theta_e_offset_mech(),
             //     balance_vehicle_car.m0_e_ofset_rad,
             //     m0_mch_rpm,
@@ -448,7 +448,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
     #endif
 
     
-    #if 0
+    #if 1
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>10 ) 
@@ -485,7 +485,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
             //     TAG,
             //     "vfoc_sped: %.2f,%.2f,%.2f,%.2f,%.2f,  %.2f,%.2f\r\n",
             //     get_vfoc_theta_m_deg(),
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+            //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
             //     // get_theta_e_offset_mech(),
             //     balance_vehicle_car.m0_e_ofset_rad,
             //     m0_mch_rpm,
@@ -674,7 +674,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     park_temp = park_tansform(
         clark_temp.I_alpha,
         clark_temp.I_beta,
-        get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+        vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
         // 0.0f
     );
 
@@ -812,7 +812,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
                 // park_temp.Uq,
 
                 // get_vfoc_theta_m_deg(),
-                // get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                // vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
                 
                 // curent_loop_id_pid.exp_v,//3
                 // // park_temp.Ud,
@@ -843,7 +843,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
             //     get_vfoc_ib_current(),
             //     get_vfoc_ic_current(),
 
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+            //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
             // );
 
 
@@ -861,7 +861,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
 
             //     now_iq,
             //     now_id,
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+            //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
 
             // );
 
@@ -872,7 +872,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
             //     get_vfoc_ib_current(),
             //     get_vfoc_ic_current(),
             //     get_vfoc_theta_m_deg(),
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+            //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
             //     get_vfoc_mech_rpm()
             // );
             // ESP_LOGI(
@@ -893,7 +893,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
             //     get_vfoc_ib_current(),
             //     get_vfoc_ic_current(),
             //     get_vfoc_theta_m_deg(),
-            //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+            //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
 
             //     vfoc_get_pwm_duty().duty_Ua,
             //     vfoc_get_pwm_duty().duty_Ub,
@@ -1228,7 +1228,7 @@ static void foc_task(void *arg)
                 //     get_vfoc_ib_current(),
                 //     get_vfoc_ic_current(),
 
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
                 // );
 
 
@@ -1246,7 +1246,7 @@ static void foc_task(void *arg)
 
                 //     now_iq,
                 //     now_id,
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg())
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
 
                 // );
 
@@ -1257,7 +1257,7 @@ static void foc_task(void *arg)
                 //     get_vfoc_ib_current(),
                 //     get_vfoc_ic_current(),
                 //     get_vfoc_theta_m_deg(),
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
                 //     get_vfoc_mech_rpm()
                 // );
                 // ESP_LOGI(
@@ -1278,7 +1278,7 @@ static void foc_task(void *arg)
                 //     get_vfoc_ib_current(),
                 //     get_vfoc_ic_current(),
                 //     get_vfoc_theta_m_deg(),
-                //     get_vfoc_theta_e_rad(get_vfoc_theta_m_deg()),
+                //     vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg()),
 
                 //     vfoc_get_pwm_duty().duty_Ua,
                 //     vfoc_get_pwm_duty().duty_Ub,
@@ -1341,7 +1341,7 @@ void foc_task_creat(void)
         ESP_LOGI(TAG,"flash_read_m0_mech_offset_ok = %.3f,flag:%d,theta:%.4f\r\n",
             balance_vehicle_car.m0_e_ofset_rad,
             balance_vehicle_car.m0_zero_theta_e_calib_flag,
-            get_vfoc_theta_e_rad(balance_vehicle_car.m0_e_ofset_rad)
+            vfoc_calc_theta_e_rad(balance_vehicle_car.m0_e_ofset_rad)
                     
         );
     }

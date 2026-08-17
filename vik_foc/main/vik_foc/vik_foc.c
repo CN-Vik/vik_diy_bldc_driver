@@ -351,12 +351,12 @@ void set_vfoc_theta_e_rad(float e_value)
 }
 
 /**
- * @brief vfoc获取电角度(弧度制)
+ * @brief vfoc计算电角度(弧度制)
  * 
  * @param m_angle 机械角度(角度值)
  * @return float 电角度弧度制
  */
-float get_vfoc_theta_e_rad(float m_angle)
+float vfoc_calc_theta_e_rad(float m_angle)
 {
     float theta_e_rad;/*电角度*/
     float mech_rad;/*机械角度 弧度制*/
@@ -690,32 +690,30 @@ static int vfoc_float_is_valid(float value)
  */
 vfoc_status_e_t vfoc_7segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pwm_duty_t *duty_out)
 {
+
     vfoc_status_e_t status = VFOC_STATUS_OK;
     
     float U1, U2, U3;
     uint8_t A, B, C, N, sector;
     float K;
     float Tx, Ty;
-    float Ta, Tb, Tc;
+    float Tmax, Tmid, Tmin;
     float temp;
 
-    if (c_v == NULL)
+    if (c_v == NULL || duty_out == NULL)
     {
         return VFOC_STATUS_NULL_PTR;
     }
 
-
-    // ========== 第1步：计算3个中间量，判断扇区 ==========
+    // ========== 第1步：判断扇区 ==========
     U1 = c_v->I_beta;
     U2 = (SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
     U3 = (-SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
 
-    // 正负号判断
     A = (U1 > 0.0f) ? 1 : 0;
     B = (U2 > 0.0f) ? 1 : 0;
     C = (U3 > 0.0f) ? 1 : 0;
 
-    // 计算N值，查表得到扇区号(1~6)
     N = A + 2*B + 4*C;
     switch(N)
     {
@@ -725,24 +723,24 @@ vfoc_status_e_t vfoc_7segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
         case 4:  sector = 4; break;
         case 6:  sector = 5; break;
         case 2:  sector = 6; break;
-        default: sector = 1; break; // 异常保护
+        default: sector = 1; break;
     }
 
-    // ========== 第2步：计算矢量作用时间Tx、Ty ==========
-    K = SQRT3 * M0_PWM_T_S / vbus; // 公共系数
+    // ========== 第2步：计算矢量作用时间 ==========
+    K = SQRT3 * M0_PWM_T_S / vbus;
 
     switch(sector)
     {
-        case 1: Tx = U2 * K;  Ty = U1 * K;  break;
-        case 2: Tx = -U2 * K; Ty = -U3 * K; break;
-        case 3: Tx = U1 * K;  Ty = -U3 * K; break;
-        case 4: Tx = -U1 * K; Ty = -U2 * K; break;
-        case 5: Tx = U3 * K;  Ty = U2 * K;  break;
-        case 6: Tx = -U3 * K; Ty = -U1 * K; break;
-        default:Tx = 0; Ty = 0; break;
+        case 1: Tx =  U2 * K; Ty =  U1 * K; break;
+        case 2: Tx = -U3 * K; Ty = -U2 * K; break;
+        case 3: Tx =  U1 * K; Ty =  U3 * K; break;
+        case 4: Tx = -U2 * K; Ty = -U1 * K; break;
+        case 5: Tx =  U3 * K; Ty =  U2 * K; break;
+        case 6: Tx = -U1 * K; Ty = -U3 * K; break;
+        default:Tx = 0.0f;    Ty = 0.0f;    break;
     }
 
-    // 过调制处理：时间超了就等比例压缩
+    // 过调制保护
     if((Tx + Ty) > M0_PWM_T_S)
     {
         temp = Tx + Ty;
@@ -750,68 +748,92 @@ vfoc_status_e_t vfoc_7segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
         Ty = (Ty / temp) * M0_PWM_T_S;
     }
 
-    // ========== 第3步：七段式基准占空比计算 ==========
-    Ta = (M0_PWM_T_S + Tx + Ty) * 0.25f;  // 占空比最大的相
-    Tb = Ta - (Tx * 0.5f);             // 中间的相
-    Tc = Tb - (Ty * 0.5f);             // 占空比最小的相
+    // ========== 第3步：按奇偶扇区精确计算 Tmax, Tmid, Tmin ==========
+    Tmin = (M0_PWM_T_S - Tx - Ty) * 0.25f; // 000 零矢量作用时间的一半
+    Tmax = (M0_PWM_T_S + Tx + Ty) * 0.25f; // 最大占空比计数值
 
-    if (duty_out == NULL)
+    // 奇数扇区先作用 Tx 后 Ty，偶数扇区先作用 Ty 后 Tx
+    if (sector % 2 != 0) 
     {
-        return VFOC_STATUS_NULL_PTR;
+        Tmid = Tmin + Ty * 0.5f; // 奇数扇区 (1, 3, 5)
+    } 
+    else 
+    {
+        Tmid = Tmin + Tx * 0.5f; // 偶数扇区 (2, 4, 6)【关键修复点】
     }
 
-    // ========== 第4步：按扇区分配给ABC三相 ==========
+    // ========== 第4步：归一化为 0~1 占空比比例 ==========
+    float duty_max = Tmax / M0_PWM_MAX_CMPV;
+    float duty_mid = Tmid / M0_PWM_MAX_CMPV;
+    float duty_min = Tmin / M0_PWM_MAX_CMPV;
+
+    // ========== 第5步：按扇区准确分配给 ABC 三相 ==========
     switch(sector)
     {
         case 1:
-            duty_out->duty_Ua = (uint16_t)Ta;  // A相
-            duty_out->duty_Ub = (uint16_t)Tb;  // B相
-            duty_out->duty_Uc = (uint16_t)Tc;  // C相
+            duty_out->duty_Ua = duty_max;
+            duty_out->duty_Ub = duty_mid;
+            duty_out->duty_Uc = duty_min;
             break;
         case 2:
-            duty_out->duty_Ua = (uint16_t)Tb;
-            duty_out->duty_Ub = (uint16_t)Ta;
-            duty_out->duty_Uc = (uint16_t)Tc;
+            duty_out->duty_Ua = duty_mid;
+            duty_out->duty_Ub = duty_max;
+            duty_out->duty_Uc = duty_min;
             break;
         case 3:
-            duty_out->duty_Ua = (uint16_t)Tc;
-            duty_out->duty_Ub = (uint16_t)Ta;
-            duty_out->duty_Uc = (uint16_t)Tb;
+            duty_out->duty_Ua = duty_min;
+            duty_out->duty_Ub = duty_max;
+            duty_out->duty_Uc = duty_mid;
             break;
         case 4:
-            duty_out->duty_Ua = (uint16_t)Tc;
-            duty_out->duty_Ub = (uint16_t)Tb;
-            duty_out->duty_Uc = (uint16_t)Ta;
+            duty_out->duty_Ua = duty_min;
+            duty_out->duty_Ub = duty_mid;
+            duty_out->duty_Uc = duty_max;
             break;
         case 5:
-            duty_out->duty_Ua = (uint16_t)Tb;
-            duty_out->duty_Ub = (uint16_t)Tc;
-            duty_out->duty_Uc = (uint16_t)Ta;
+            duty_out->duty_Ua = duty_mid;
+            duty_out->duty_Ub = duty_min;
+            duty_out->duty_Uc = duty_max;
             break;
         case 6:
-            duty_out->duty_Ua = (uint16_t)Ta;
-            duty_out->duty_Ub = (uint16_t)Tc;
-            duty_out->duty_Uc = (uint16_t)Tb;
+            duty_out->duty_Ua = duty_max;
+            duty_out->duty_Ub = duty_min;
+            duty_out->duty_Uc = duty_mid;
             break;
         default:
-            duty_out->duty_Ua = M0_PWM_T_S/2;
-            duty_out->duty_Ub = M0_PWM_T_S/2;
-            duty_out->duty_Uc = M0_PWM_T_S/2;
+            duty_out->duty_Ua = 0.5f;
+            duty_out->duty_Ub = 0.5f;
+            duty_out->duty_Uc = 0.5f;
             break;
     }
 
-
-    /*
-     * 最终 duty 保护。
-     * 算法前面已经做过线性区缩放，正常不会碰到这里。
-     * 这里是最后一道保险。
-     */
+    // 最终限幅（现在单位是0~1，限幅就正常生效了）
     duty_out->duty_Ua = vfoc_limit(duty_out->duty_Ua, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
     duty_out->duty_Ub = vfoc_limit(duty_out->duty_Ub, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
     duty_out->duty_Uc = vfoc_limit(duty_out->duty_Uc, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
 
-    return status;
+    #if 0
+        static uint32_t cnt = 0;
+        if ((cnt++)>100)
+        {
+            cnt = 0;
+            ESP_LOGI(
+                TAG,
+                "7svpwm: %.4f,%.4f,%.4f, %.4f,%.4f,%.4f \r\n",
+                duty_out->duty_Ua,
+                duty_out->duty_Ub,
+                duty_out->duty_Uc,
 
+                c_v->I_alpha,
+                c_v->I_beta,
+                vbus
+            );
+
+        }
+        
+    #endif
+
+    return status;
 }
 
 
@@ -851,26 +873,22 @@ vfoc_status_e_t vfoc_5segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
     uint8_t A, B, C, N, sector;
     float K;
     float Tx, Ty;
-    float Ta, Tb, Tc;
     float temp;
 
-    if (c_v == NULL)
+    if (c_v == NULL || duty_out == NULL)
     {
         return VFOC_STATUS_NULL_PTR;
     }
 
-
-    // ========== 第1步：计算3个中间量，判断扇区 ==========
+    // ========== 第1步：判断扇区 ==========
     U1 = c_v->I_beta;
     U2 = (SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
     U3 = (-SQRT3 * c_v->I_alpha - c_v->I_beta) * 0.5f;
 
-    // 正负号判断
     A = (U1 > 0.0f) ? 1 : 0;
     B = (U2 > 0.0f) ? 1 : 0;
     C = (U3 > 0.0f) ? 1 : 0;
 
-    // 计算N值，查表得到扇区号(1~6)
     N = A + 2*B + 4*C;
     switch(N)
     {
@@ -880,24 +898,24 @@ vfoc_status_e_t vfoc_5segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
         case 4:  sector = 4; break;
         case 6:  sector = 5; break;
         case 2:  sector = 6; break;
-        default: sector = 1; break; // 异常保护
+        default: sector = 1; break;
     }
 
-    // ========== 第2步：计算矢量作用时间Tx、Ty ==========
-    K = SQRT3 * M0_PWM_T_S / vbus; // 公共系数
+    // ========== 第2步：计算矢量作用时间 Tx, Ty（已修正） ==========
+    K = SQRT3 * M0_PWM_T_S / vbus;
 
     switch(sector)
     {
-        case 1: Tx = U2 * K;  Ty = U1 * K;  break;
-        case 2: Tx = -U2 * K; Ty = -U3 * K; break;
-        case 3: Tx = U1 * K;  Ty = -U3 * K; break;
-        case 4: Tx = -U1 * K; Ty = -U2 * K; break;
-        case 5: Tx = U3 * K;  Ty = U2 * K;  break;
-        case 6: Tx = -U3 * K; Ty = -U1 * K; break;
-        default:Tx = 0; Ty = 0; break;
+        case 1: Tx =  U2 * K; Ty =  U1 * K; break;
+        case 2: Tx = -U3 * K; Ty = -U2 * K; break; // 修正
+        case 3: Tx =  U1 * K; Ty =  U3 * K; break; // 修正
+        case 4: Tx = -U2 * K; Ty = -U1 * K; break; // 修正
+        case 5: Tx =  U3 * K; Ty =  U2 * K; break;
+        case 6: Tx = -U1 * K; Ty = -U3 * K; break; // 修正
+        default:Tx = 0.0f;    Ty = 0.0f;    break;
     }
 
-    // 过调制处理：时间超了就等比例压缩
+    // 过调制保护
     if((Tx + Ty) > M0_PWM_T_S)
     {
         temp = Tx + Ty;
@@ -905,69 +923,62 @@ vfoc_status_e_t vfoc_5segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
         Ty = (Ty / temp) * M0_PWM_T_S;
     }
 
-    // ========== 第3步：七段式基准占空比计算 ==========
-    Ta = (M0_PWM_T_S + Tx + Ty) * 0.25f;  // 占空比最大的相
-    Tb = Ta - (Tx * 0.5f);             // 中间的相
-    Tc = Tb - (Ty * 0.5f);             // 占空比最小的相
+    // ========== 第3步：按扇区计算五段式占空比，并归一化为 0~1 比例 ==========
+    // 奇数扇区使用 V0(000) 零矢量钳位低位；偶数扇区使用 V7(111) 零矢量钳位高位
 
-    if (duty_out == NULL)
-    {
-        return VFOC_STATUS_NULL_PTR;
-    }
+    float Ts = M0_PWM_T_S;
 
-    // ========== 【唯一和七段式不同的地方】五段式占空比分配 ==========
-    // 每个扇区钳位一相：钳位低则CCR=0，钳位高则CCR=T_pwm，该相全程不开关
-    // ========== 第4步：按扇区分配给ABC三相 ==========
     switch(sector)
     {
         case 1: 
-            // 扇区1：C相钳位到低，零矢量用000
-            duty_out->duty_Ua = (uint16_t)(Tx + Ty);  // A相
-            duty_out->duty_Ub = (uint16_t)Ty;         // B相
-            duty_out->duty_Uc = 0;                    // C相 全程不开关
+            // C相钳位 0
+            duty_out->duty_Ua = (Tx + Ty) / Ts;
+            duty_out->duty_Ub = Ty / Ts;
+            duty_out->duty_Uc = 0.0f;
             break;
             
         case 2: 
-            // 扇区2：B相钳位到高，零矢量用111
-            duty_out->duty_Ua = (uint16_t)(M0_PWM_T_S - Ty);      // A相
-            duty_out->duty_Ub = M0_PWM_T_S;                       // B相 全程不开关
-            duty_out->duty_Uc = (uint16_t)(M0_PWM_T_S - Tx - Ty); // C相
+            // B相钳位 1.0
+            duty_out->duty_Ua = (Ts - Ty) / Ts;
+            duty_out->duty_Ub = 1.0f;
+            duty_out->duty_Uc = (Ts - Tx - Ty) / Ts;
             break;
             
         case 3: 
-            // 扇区3：A相钳位到低，零矢量用000
-            duty_out->duty_Ua = 0;                    // A相 全程不开关
-            duty_out->duty_Ub = (uint16_t)(Tx + Ty);  // B相
-            duty_out->duty_Uc = (uint16_t)Tx;         // C相
+            // A相钳位 0 (修正 Uc = Ty)
+            duty_out->duty_Ua = 0.0f;
+            duty_out->duty_Ub = (Tx + Ty) / Ts;
+            duty_out->duty_Uc = Ty / Ts;
             break;
             
         case 4: 
-            // 扇区4：C相钳位到高，零矢量用111
-            duty_out->duty_Ua = (uint16_t)Tx;         // A相
-            duty_out->duty_Ub = (uint16_t)(M0_PWM_T_S - Tx - Ty); // B相
-            duty_out->duty_Uc = M0_PWM_T_S;                // C相 全程不开关
+            // C相钳位 1.0 (修正 Ua, Ub 分配)
+            duty_out->duty_Ua = (Ts - Tx - Ty) / Ts;
+            duty_out->duty_Ub = (Ts - Ty) / Ts;
+            duty_out->duty_Uc = 1.0f;
             break;
             
         case 5: 
-            // 扇区5：B相钳位到低，零矢量用000
-            duty_out->duty_Ua = (uint16_t)(M0_PWM_T_S - Tx - Ty); // A相
-            duty_out->duty_Ub = 0;                    // B相 全程不开关
-            duty_out->duty_Uc = (uint16_t)(Tx + Ty);  // C相
+            // B相钳位 0 (修正 Ua = Ty)
+            duty_out->duty_Ua = Ty / Ts;
+            duty_out->duty_Ub = 0.0f;
+            duty_out->duty_Uc = (Tx + Ty) / Ts;
             break;
             
         case 6: 
-            // 扇区6：A相钳位到高，零矢量用111
-            duty_out->duty_Ua = M0_PWM_T_S;                // A相 全程不开关
-            duty_out->duty_Ub = (uint16_t)(M0_PWM_T_S - Ty);  // B相
-            duty_out->duty_Uc = (uint16_t)(M0_PWM_T_S - Tx);  // C相
+            // A相钳位 1.0 (修正 Ub, Uc 分配)
+            duty_out->duty_Ua = 1.0f;
+            duty_out->duty_Ub = (Ts - Tx - Ty) / Ts;
+            duty_out->duty_Uc = (Ts - Ty) / Ts;
             break;
             
         default:
-            duty_out->duty_Ua = M0_PWM_T_S / 2;
-            duty_out->duty_Ub = M0_PWM_T_S / 2;
-            duty_out->duty_Uc = M0_PWM_T_S / 2;
+            duty_out->duty_Ua = 0.5f;
+            duty_out->duty_Ub = 0.5f;
+            duty_out->duty_Uc = 0.5f;
             break;
     }
+
 
     /*
      * 最终 duty 保护。
@@ -977,6 +988,28 @@ vfoc_status_e_t vfoc_5segment_svpwm_calc(const clark_parm_t *c_v, float vbus, pw
     duty_out->duty_Ua = vfoc_limit(duty_out->duty_Ua, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
     duty_out->duty_Ub = vfoc_limit(duty_out->duty_Ub, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
     duty_out->duty_Uc = vfoc_limit(duty_out->duty_Uc, VFOC_PWM_DUTY_MIN, VFOC_PWM_DUTY_MAX);
+
+
+    #if 0
+        static uint32_t cnt = 0;
+        if ((cnt++)>100)
+        {
+            cnt = 0;
+            ESP_LOGI(
+                TAG,
+                "5svpwm: %.4f,%.4f,%.4f, %.4f,%.4f,%.4f \r\n",
+                duty_out->duty_Ua,
+                duty_out->duty_Ub,
+                duty_out->duty_Uc,
+
+                c_v->I_alpha,
+                c_v->I_beta,
+                vbus
+            );
+
+        }
+        
+    #endif
 
     return status;
 
@@ -1342,9 +1375,9 @@ void vfoc_set_svpwm(float uq,
     vfoc_m0_dt.park_val.Ud = ud;
 
     /*获取电角度弧度制*/
-    // vfoc_m0_dt.motor_par.theta_e = get_vfoc_theta_e_rad();
+    // vfoc_m0_dt.motor_par.theta_e = vfoc_calc_theta_e_rad();
 
-    get_vfoc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
+    vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
 
     /*
      * 3. 逆 Park：
@@ -1411,7 +1444,7 @@ void vfoc_set_svpwm(float uq,
 
     #endif
     
-    #if 1
+    #if 0
         static uint32_t log_cnt = 0; 
         if ( (log_cnt++)>100 ) 
         {
@@ -1506,7 +1539,7 @@ void vfoc_set_spwm( float uq,
     vfoc_m0_dt.park_val.Uq = uq;
     vfoc_m0_dt.park_val.Ud = ud;
 
-    get_vfoc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
+    vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
 
 
     /*
