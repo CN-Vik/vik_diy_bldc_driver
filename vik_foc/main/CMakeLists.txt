@@ -7,6 +7,7 @@ set(INC_MOTOR_CURRENT "motor_current")
 set(INC_AS5600        "as5600")
 set(INC_BSP        "BSP")
 set(INC_MOTOR_POWER   "motor_power")
+set(INC_SIX_STEP_CTRL_MOTOR   "six_step_ctrl_motor")
 
 
 # 合并所有头文件
@@ -19,6 +20,7 @@ set(COMPONENT_PRIV_INC_DIRS
     ${INC_AS5600}
     ${INC_MOTOR_POWER}
     ${INC_BSP}
+    ${INC_SIX_STEP_CTRL_MOTOR}
 
 )
 
@@ -42,6 +44,8 @@ file(GLOB VIK_FOC_SOURCES "vik_foc/*.c")
 
 file(GLOB AS5600_SOURCES "as5600/*.c")
 
+file(GLOB SIX_STEP_CTRL_MOTOR_SOURCES "six_step_ctrl_motor/*.c")
+
 # 合并所有源文件
 set(COMPONENT_SRCS
     ${MAIN_SOURCES}
@@ -50,6 +54,7 @@ set(COMPONENT_SRCS
     ${VIK_FOC_SOURCES}
     ${AS5600_SOURCES}
     ${MOTOR_POWER_SOURCES}
+    ${SIX_STEP_CTRL_MOTOR_SOURCES}
 )
 
 

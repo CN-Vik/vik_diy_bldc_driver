@@ -1911,7 +1911,7 @@ void vfoc_init(foc_data_t *vfoc_dt)
         /*所使用的是2208电机，极对数为7*/
         vfoc_dt->motor_par.theta_m = 0.0f;
         vfoc_dt->motor_par.theta_e = 0.0f;
-        vfoc_dt->motor_par.pole_pairs = 7;
+        vfoc_dt->motor_par.pole_pairs = MOTOR_POLR;
         vfoc_dt->motor_par.KV = MOTOR_KV;/*100RPM/V*/
         vfoc_dt->motor_par.Phase_Rs = 8.25f;/*相电阻8.25欧姆*/
         vfoc_dt->motor_par.Phase_Ls = 0.00425f;/*相电感 4.25mH*/

@@ -88,6 +88,9 @@ do {                                            \
 #define MOTOR_DRV_VBUS             12.0f  /* 12V */
 
 
+#define MOTOR_POLR         7 /*电机磁极对数*/
+
+
 /**
  * @brief 克拉克变换参数
  * 

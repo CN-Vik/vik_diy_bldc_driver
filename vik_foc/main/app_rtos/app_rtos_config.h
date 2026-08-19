@@ -31,6 +31,7 @@
 /* ADC读取任务优先级 */
 #define MOTOR_CURRENT_ADC_TASK_PRIO         22
 #define FOC_TASK_PRIO                       21
+#define SIX_STEP_PRIO                       19
 #define MO_GET_ANGLE_TASK_PRIO              20
 
 
@@ -40,6 +41,7 @@
 #define MOTOR_CURRENT_TASK_STACK        (8 * 1024)
 #define MOTOR_GET_ANGLE_TASK_STACK      (8 * 1024)
 #define FOC_TASK_STACK                  (16 * 1024) /*8K Byte*/
+#define SIX_STEP_TASK_STACK             (16 * 1024) /*8K Byte*/
 
 
 
@@ -51,6 +53,7 @@
 #define APP_TASK_CORE_1            1
 
 #define FOC_TASK_RUN_CORE               APP_TASK_CORE_0 /*跨核传数据，延迟会大*/
+#define SIX_STEP_RUN_CORE               APP_TASK_CORE_0 /*跨核传数据，延迟会大*/
 #define MOTOR_CURRENT_TASK_CORE         APP_TASK_CORE_1 /*目前基于ESP32的最优方案就是，两个线程单独去采样数据*/
 #define MOTOR_GET_ANGLE_TASK_CORE       APP_TASK_CORE_1
 
