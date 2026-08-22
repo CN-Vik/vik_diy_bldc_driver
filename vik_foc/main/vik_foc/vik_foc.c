@@ -94,6 +94,62 @@ float lp_filter_update(lp_filter_t *f, float input)
 }
 
 
+
+/**
+ * @brief 一阶低通滤波器(IIR Low Pass Filter)
+ *
+ * 数学公式：
+ *      y(n) = y(n-1) + α * (x(n) - y(n-1))
+ *
+ * 等价于：
+ *      y = α*x + (1-α)*y_old
+ *
+ * 说明：
+ *      old    ：上一次滤波后的输出值
+ *      input  ：本次新的采样值
+ *      alpha  ：滤波系数(0~1)
+ *
+ * alpha越小：
+ *      - 滤波越强
+ *      - 输出更平滑
+ *      - 响应更慢
+ *
+ * alpha越大：
+ *      - 滤波越弱
+ *      - 响应更快
+ *      - 更接近原始采样值
+ *
+ * 特殊情况：
+ *      alpha = 1.0f
+ *          等于关闭滤波
+ *
+ *      alpha = 0.0f
+ *          输出永远保持旧值
+ *
+ * 本滤波器推荐用于：
+ *      - FOC相电流(Ia、Ib)
+ *      - 母线电流
+ *      - 母线电压
+ *      - 编码器速度
+ *
+ * 不建议用于：
+ *      - ADC Raw原始值
+ * 
+ * @param alpha 一阶低通滤波系数
+ *      推荐：
+ *          10kHz采样：0.25
+ *          15kHz采样：0.32
+ *          20kHz采样：0.40
+ * @param new_input 当前新的采样输入值
+ * @param old 上一次滤波后的输出值
+ * @return float 当前滤波后的输出值
+ */
+static inline float low_pas_filter(float alpha, float new_input, float old)
+{
+    return old + alpha * (new_input - old);
+}
+
+
 /*-------------------低通滤波---------------------------*/
 
 
@@ -339,6 +395,19 @@ float get_theta_e_offset_mech(void)
 {
     return vfoc_m0_dt.motor_par.theta_e_offset_mech;
 }
+
+
+
+/**
+ * @brief 获取电角度的值
+ * 
+ * @param e_value 电角度值
+ */
+float get_vfoc_theta_e_rad(void)
+{
+    return vfoc_m0_dt.motor_par.theta_e;
+}
+
 
 /**
  * @brief 设置电角度的值
@@ -1913,10 +1982,10 @@ void vfoc_init(foc_data_t *vfoc_dt)
         vfoc_dt->motor_par.theta_e = 0.0f;
         vfoc_dt->motor_par.pole_pairs = MOTOR_POLR;
         vfoc_dt->motor_par.KV = MOTOR_KV;/*100RPM/V*/
-        vfoc_dt->motor_par.Phase_Rs = 8.25f;/*相电阻8.25欧姆*/
-        vfoc_dt->motor_par.Phase_Ls = 0.00425f;/*相电感 4.25mH*/
-        vfoc_dt->motor_par.Ld = 0.00425f;/*D轴电感 4.25mH*/
-        vfoc_dt->motor_par.Lq = 0.00425f;/*D轴电感 4.25mH*/
+        vfoc_dt->motor_par.Phase_Rs = MOTOR_RS;/*相电阻8.25欧姆*/
+        vfoc_dt->motor_par.Phase_Ls = MOTOR_LS;/*相电感 4.25mH*/
+        vfoc_dt->motor_par.Ld = MOTOR_LS;/*D轴电感 4.25mH*/
+        vfoc_dt->motor_par.Lq = MOTOR_LS;/*D轴电感 4.25mH*/
         
         vfoc_dt->motor_par.psi_f = 0.00788f;/*计算得出7.88mWb*/
         
@@ -1926,3 +1995,99 @@ void vfoc_init(foc_data_t *vfoc_dt)
 
 
 }
+
+
+
+
+/*----------------------无感FOC--Sensor_less_FOC---------------------------*/
+
+
+/*-------SMO-滑膜观测器----------*/
+/**
+ * @brief 初始化滑模观测器
+ */
+uint8_t SMO_Init(smo_ctrl_t *smo) 
+{
+    if (smo==NULL)
+    {
+        return 1;
+    }
+    
+    smo->Rs = MOTOR_RS;
+    smo->Ls = MOTOR_LS;
+    smo->Ts = SMO_TS;
+    smo->k_smo = 0.3f;
+    smo->i_alpha_hat = 0.0f;
+    smo->i_beta_hat = 0.0f;
+    smo->ebmf_alpha = 0.0f;
+    smo->ebmf_beta = 0.0f;
+    smo->theta_e = 0.0f;
+
+    return 0;
+
+}
+
+
+/**
+ * @brief 饱和函数 (Saturation Function)
+ * @details 替代传统滑模控制中的符号函数 (Sign)，在边界层 [-delta, delta] 内进行线性过渡，
+ *          超出边界层输出 ±1.0。可消除高频开关动作带来的高频抖振 (Chattering)。
+ * 
+ * @param err   控制误差输入 (如电流估计误差 i_hat - i)
+ * @param delta 边界层厚度 (Boundary Layer)，决定线性区的半宽 (要求 > 0),限幅值
+ * @return float 归一化的控制输出信号，取值范围 [-1.0f, 1.0f]
+ */
+static inline float SMO_Sat(float err, float delta) 
+{
+    if (err > delta) return 1.0f;
+    if (err < -delta) return -1.0f;
+    return err / delta;
+}
+
+/**
+ * @brief 滑模观测器更新 API
+ * @param smo 控制器句柄
+ * @param u_alpha alpha 轴电压 (V)
+ * @param u_beta  beta 轴电压 (V)
+ * @param i_alpha alpha 轴实际采样电流 (A)
+ * @param i_beta  beta 轴实际采样电流 (A)
+ * @return float  返回当前计算得到的电角度 (rad)
+ */
+float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, float i_beta) 
+{
+    // 1. 计算电流估计误差
+    float i_alpha_err = smo->i_alpha_hat - i_alpha;
+    float i_beta_err  = smo->i_beta_hat - i_beta;
+
+    // 2. 假定的反电动势值 (使用饱和函数平滑控制)
+    float ebmf_alpha_est = smo->k_smo * SMO_Sat(i_alpha_err, 0.5f);
+    float ebmf_beta_est  = smo->k_smo * SMO_Sat(i_beta_err, 0.5f);
+
+    // 3. 一阶离散化更新电流估计值: di/dt = (-Rs/Ls)*i + (u - ebmf_est)/Ls
+    smo->i_alpha_hat += smo->Ts * ((-smo->Rs / smo->Ls) * smo->i_alpha_hat + (u_alpha - ebmf_alpha_est) / smo->Ls);
+    smo->i_beta_hat  += smo->Ts * ((-smo->Rs / smo->Ls) * smo->i_beta_hat + (u_beta - ebmf_beta_est) / smo->Ls);
+    
+
+    // 4. 一阶低通滤波器提取反电动势 e 
+    smo->ebmf_alpha = low_pas_filter(0.45f,smo->ebmf_alpha, ebmf_alpha_est);
+    smo->ebmf_beta = low_pas_filter(0.45f,smo->ebmf_beta, ebmf_beta_est);
+
+
+    // 5. 反正切求电角度: ebmf_alpha = -E*sin(theta), ebmf_beta = E*cos(theta)
+    // 故 tan(theta) = -ebmf_alpha / ebmf_beta
+    smo->theta_e = -atan2f(smo->ebmf_alpha, smo->ebmf_beta);
+
+    // 6. 将弧度约束在 [0, 2*PI] 范围
+    if (smo->theta_e < 0.0f) {
+        smo->theta_e += 2.0f * FOC_PI;
+    }
+
+    return smo->theta_e;
+}
+
+/*-------SMO-滑膜观测器----------*/
+
+
+
+
+/*----------------------无感FOC--Sensor_less_FOC---------------------------*/

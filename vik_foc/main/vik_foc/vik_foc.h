@@ -89,7 +89,9 @@ do {                                            \
 
 
 #define MOTOR_POLR         7 /*电机磁极对数*/
-
+#define MOTOR_LS         (4.25f*1e-3f) /*电机相电感 4.25mH*/
+#define MOTOR_RS         (8.25f) /*电机相电阻 8.25欧姆*/
+#define SMO_TS            (1/20000.0f)
 
 /**
  * @brief 克拉克变换参数
@@ -185,6 +187,28 @@ typedef struct
 
 }motor_parm_t;
 
+/**
+ * @brief 滑膜观测器结构体
+ * 
+ */
+typedef struct {
+    // 硬件与控制参数
+    float Rs;          // 定子电阻 (Ω)
+    float Ls;          // 定子电感 (H)
+    float Ts;          // 采样周期 (s)
+    float k_smo;       // 滑模控制增益
+
+    // 内部状态变量
+    float i_alpha_hat; // alpha 轴估计电流 (A)
+    float i_beta_hat;  // beta 轴估计电流 (A)
+    float ebmf_alpha;     // 滤波后的 alpha 轴反电势 (V)
+    float ebmf_beta;      // 滤波后的 beta 轴反电势 (V)
+
+    // 输出结果
+    float theta_e;     // 输出电角度 (rad, [0, 2*PI])
+
+}smo_ctrl_t;
+
 
 /**
  * @brief foc数据结构体，
@@ -203,6 +227,8 @@ typedef struct
         以及三相Ua,Ub,Uc占空比的值
     */
     motor_driver_parm_t motor_drv_val;
+
+    smo_ctrl_t smo_val;
 
     /*电机实际硬件参数：（极对数，电角度，机械角度）*/
     motor_parm_t motor_par;
@@ -276,6 +302,7 @@ theta = lp_filter_update(&angle_f, raw_angle);
  * */
 void lp_filter_init(lp_filter_t *f, float alpha);
 float lp_filter_update(lp_filter_t *f, float input);
+static inline float low_pas_filter(float alpha, float new_input, float old);
 
 
 /*-------------------低通滤波---------------------------*/
@@ -285,6 +312,7 @@ void set_theta_e_offset_mech(float mech_offset);
 float get_theta_e_offset_mech(void);
 float limit_float(float x, float min, float max);
 void set_vfoc_theta_e_rad(float e_value);
+float get_vfoc_theta_e_rad(void);
 float vfoc_calc_theta_e_rad(float m_angle);
 float low_pass_filter(float input, float alpha);
 void vfoc_set_motor_drv_iq(float uq);
@@ -348,6 +376,14 @@ void set_vfoc_ic_current(float curent);
 float get_vfoc_ia_current(void);
 float get_vfoc_ib_current(void);
 float get_vfoc_ic_current(void);
+
+
+/*----------------------无感FOC--Sensor_less_FOC---------------------------*/
+
+uint8_t SMO_Init(smo_ctrl_t *smo);
+float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, float i_beta);
+
+
 
 
 #endif

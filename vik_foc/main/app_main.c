@@ -34,8 +34,8 @@
 
 
 
-// #define USE_FOC
-#define USE_SIX_STEP
+#define USE_FOC
+// #define USE_SIX_STEP
 
 static const char *TAG = "vik_foc_example_main";
 
@@ -50,6 +50,8 @@ void motor_ctrl_task(void)
      * 里面设置 pole_pairs = 7。
      */
     vfoc_init(&vfoc_m0_dt);
+
+    SMO_Init(&vfoc_m0_dt.smo_val);/*滑膜观测器初始化*/
 
     /*初始化 MOS enable GPIO,默认必须关闭 MOS*/
     motor_power_init();

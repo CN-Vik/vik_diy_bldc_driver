@@ -1015,7 +1015,7 @@ float vfoc_calibrate_m0_offset(void)
  * 
  * @param arg 
  */
-static void foc_task(void *arg)
+void foc_task(void *arg)
 {
     static uint32_t log_cnt = 0;
 

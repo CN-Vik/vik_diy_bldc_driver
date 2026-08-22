@@ -11,5 +11,7 @@
 extern TaskHandle_t foc_task_handle;
 
 float vfoc_calibrate_m0_offset(void);
+void foc_task(void *arg);
+
 
 #endif 
