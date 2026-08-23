@@ -73,6 +73,7 @@ const static char *TAG = "FOC_TASK";
 /*开启电流环*/
 #define VFOC_CURENT_LOOP_EN    0
 
+#define FOC_SENSOR_LESS_EN     0
 
 /*浮点数专用的绝对值宏*/
 #define FABS(x) (((x) >= 0.0f ) ? (x) : -(x))
@@ -448,7 +449,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
     #endif
 
     
-    #if 1
+    #if 0
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>10 ) 
@@ -503,125 +504,6 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
 
 #if (VFOC_CURENT_LOOP_EN == 1)
-
-/**
- * @brief 速度环PI控制(基于电流环)
- * 
- * @param exp_sped_rpm (r/min)  期望转速
- * @return float PID算出来的结果
- */
-float vfoc_speed_loop_base_curent(float exp_sped_rpm)
-{
-    static uint32_t log_cnt = 0;
-    float m0_mch_rpm = 0.0f;
-
-    #ifdef TASK_RUNTIME_STATIS
-        ++sped_loop_time_stamp.index;
-        sped_loop_time_stamp.index %= TIME_STAMP_SIZE;
-        sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % (TIME_STAMP_SIZE)].strat_t = esp_timer_get_time();
-        #if 0 /*任务运行频率统计*/
-            if ( sped_loop_time_stamp.index == 20 )
-            {
-                ESP_LOGW(
-                    TAG,
-                    "vfoc_speed_loop_t:%lld,%lld,%lld us\r\n",
-                    sped_loop_time_stamp.time[20-1].strat_t,
-                    sped_loop_time_stamp.time[20-2].strat_t,
-                    sped_loop_time_stamp.time[20-2].strat_t - sped_loop_time_stamp.time[20-1].strat_t
-
-                );
-
-                sped_loop_time_stamp.index = 0;
-            }
-        #endif
-    #endif
-
-    /*设置速度环周期值*/
-    speed_loop_pid.pid_dt = SPEED_LOOP_DT;
-
-    /*设置转速期望值*/
-    speed_loop_pid.exp_v = exp_sped_rpm;
-
-    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 10)!= pdPASS )
-    {
-        ESP_LOGW(
-            TAG,
-            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
-            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
-        );
-    }
-    // if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
-    /*获取当前转速实际值*/
-    speed_loop_pid.now_v = m0_mch_rpm;
-
-    /*计算转速误差 = 期望值-实际值*/
-    speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
-
-    speed_loop_pid.kp = 0.0007f;
-    speed_loop_pid.ki = 0.0f;
-    speed_loop_pid.kd = 0.0f;
-
-    speed_loop_pid.ki_integral_max = +SPEED_I_OUT_LIMIT;
-    speed_loop_pid.ki_integral_min = -SPEED_I_OUT_LIMIT;
-
-    speed_loop_pid.pid_out_max = +SPEED_PID_OUT_LIMIT;
-    speed_loop_pid.pid_out_min = -SPEED_PID_OUT_LIMIT;
-
-    vfoc_pid_calt(&speed_loop_pid);
-
-    speed_loop_pid.last_err_v = speed_loop_pid.err_v;
-
-    #ifdef TASK_RUNTIME_STATIS
-        sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].end_t = esp_timer_get_time();
-        sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].dt = 
-            sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].end_t -
-            sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].strat_t;
-        #if 0 /*任务运行时长统计*/
-            if ( sped_loop_time_stamp.index == 20 )
-            {
-                ESP_LOGW(
-                    TAG,
-                    "vfoc_speed_loop_DT:%lldus\r\n",
-                    sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].dt
-                );
-
-                sped_loop_time_stamp.index = 0;
-            }
-        #endif
-    #endif
-
-    
-    #if 0
-        // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>100 ) 
-        {
-            log_cnt = 0;
-            ESP_LOGI(
-                TAG,
-                // "vfoc_sped: %.2f,%.2f ,%.2f,%.2f, ,%.2f,%.2f, %.2f \r\n",
-                "vfoc_sped: %.2f,%.2f ,%.2f,%.2f ,%.2f\r\n",
-                speed_loop_pid.exp_v,
-                speed_loop_pid.now_v,
-
-                speed_loop_pid.err_v,
-                speed_loop_pid.kp_out,
-
-                speed_loop_pid.pid_out/*iqref*/
-                // curent_loop_iq_pid.now_v,/*iq*/
-                // curent_loop_park.Uq
-                // vfoc_get_uqd().Uq
-                
-            );
-
-        }
-    #endif
-
-    return speed_loop_pid.pid_out;
-
-}
-
-
 
 
 /**
@@ -1035,6 +917,17 @@ void foc_task(void *arg)
     uint16_t freq_1KHZ_cnt = 0;
     uint16_t freq_200HZ_cnt = 0;
 
+    clark_parm_t l_temp_clark_v = {0};
+    vfoc_status_e_t svpwm_status;
+
+    clark_parm_t clark_temp={0};
+    park_parm_t park_temp={0};
+
+    float smo_theta_e = 0.0f;/*无感滑膜计算出来的电角度*/
+    float sensor_theta_e = 0.0f;/*编码器传感器计算的电角度*/
+
+    uint8_t sensor_les_flag = 0;
+
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -1063,6 +956,61 @@ void foc_task(void *arg)
             pwm_isr_t_stamp = get_motor_pwm_isr_time_stamp();
 
         #endif
+
+        /* clark变换,
+        输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
+        clark_temp = clark_tansform(
+            get_vfoc_ia_current(),
+            get_vfoc_ib_current(),
+            get_vfoc_ic_current()
+        );
+        
+        #if (FOC_SENSOR_LESS_EN == 1)
+
+            if ( (smo_theta_e<=FOC_2PI ) && (!sensor_les_flag))
+            {
+                smo_theta_e += 0.01f;
+                // ESP_LOGE(
+                //     TAG,
+                //     "foc_open_lop!,%.4f\r\n",
+                //     smo_theta_e
+                // );
+                
+            }else{
+
+                sensor_les_flag = 1;
+                // ESP_LOGE(
+                //     TAG,
+                //     "foc_nosensor!,%.4f\r\n",
+                //     smo_theta_e
+                // );
+
+                smo_theta_e = SMO_Update(
+                    &vfoc_m0_dt.smo_val,
+                    l_temp_clark_v.I_alpha,
+                    l_temp_clark_v.I_beta,
+                    clark_temp.I_alpha,
+                    clark_temp.I_beta
+                );
+
+            }
+            
+            set_vfoc_theta_e_rad(smo_theta_e);
+            sensor_theta_e = smo_theta_e;/*更新电角度值*/
+        #else
+            sensor_theta_e = vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
+        #endif
+
+        /* park变换
+        * 输入两相静止坐标系电流 I_alpha、I_beta，
+        * 结合当前电角度 theta_e_rad，
+        * 计算旋转坐标系下的 Id、Iq。
+        * */
+        park_temp = park_tansform(
+            clark_temp.I_alpha,
+            clark_temp.I_beta,
+            sensor_theta_e
+        );
 
         // if ( 0 )
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
@@ -1141,12 +1089,125 @@ void foc_task(void *arg)
                 MOTOR_DRV_VBUS
             );
         #elif defined(USE_FOC_SVPWM)
-            /*设置Uq,Ud*/
-            vfoc_set_svpwm(
-                vfoc_get_uqd().Uq,
-                vfoc_get_uqd().Ud,
-                MOTOR_DRV_VBUS
-            );
+
+            /*
+            * 2. 设置 dq 电压。
+            *
+            * 开环阶段：
+            *      Ud = 0
+            *      Uq = 给定测试电压
+            */
+            vfoc_m0_dt.park_val.Uq = curent_loop_park.Uq;
+            vfoc_m0_dt.park_val.Ud = curent_loop_park.Ud;
+
+            /*获取电角度弧度制*/
+            // vfoc_m0_dt.motor_par.theta_e = vfoc_calc_theta_e_rad();
+
+            /*
+            * 3. 逆 Park：
+            *      输入Ud/Uq + theta_e，输出Ualpha/Ubeta
+            */
+            l_temp_clark_v = park_inv_transform(&vfoc_m0_dt);
+
+            /*
+            * 4. 可选：保存 Ua/Ub/Uc，方便你打印调试。
+            *
+            * 注意：
+            * 真正 SVPWM duty 不依赖这里的 Ua/Ub/Uc。
+            * SVPWM 是直接用 alpha/beta 算 duty。
+            */
+            vfoc_m0_dt.motor_drv_val = clark_inv_transform(&l_temp_clark_v);
+
+            /*
+            * 5. SVPWM：
+            *      Ualpha/Ubeta -> duty_Ua/duty_Ub/duty_Uc
+            */
+
+            #if 0
+                svpwm_status = vfoc_svpwm_calc_duty_uab(
+                    &l_temp_clark_v,
+                    vbus,
+                    &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+                );
+            #else 
+            
+                #if 1
+                    svpwm_status = vfoc_7segment_svpwm_calc(
+                        &l_temp_clark_v,
+                        MOTOR_DRV_VBUS,
+                        &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+                    );
+                #else        
+                    svpwm_status = vfoc_5segment_svpwm_calc(
+                        &l_temp_clark_v,
+                        vbus,
+                        &vfoc_m0_dt.motor_drv_val.pwm_duty_val
+                    );
+                #endif
+
+            #endif
+
+
+            #if 0
+                static uint32_t log_cnt = 0;
+                if ( (log_cnt++)>10 ) 
+                {
+                    /*
+                    * 这里打印的是 SVPWM 注入零序之后的三相电压。
+                    * 注意：这个 sum 不一定等于 0。
+                    */
+                    // ESP_LOGI(TAG,"SVPWM_UVW: %.4f,%.4f,%.4f \r\n",
+                    //         vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ua,
+                    //         vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ub,
+                    //         vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Uc
+                    // );
+                    
+                    ESP_LOGI(
+                        TAG,
+                        "foc_task: %.3f,%.3f \r\n",
+                        sensor_theta_e,
+                        smo_theta_e
+                    );
+
+                    log_cnt = 0;
+                }
+
+            #endif
+            
+            #if 0
+                static uint32_t log_cnt = 0; 
+                if ( (log_cnt++)>100 ) 
+                {
+                    ESP_LOGI(
+                        TAG,
+                        "vfoc_svpwm: %.2f,%.2f,%.2f, %.2f,%.2f,%.2f, %.2f,%.2f,%.2f \r\n",
+                        vfoc_m0_dt.park_val.Uq,
+                        l_temp_clark_v.I_alpha,
+                        l_temp_clark_v.I_beta,
+
+                        vfoc_m0_dt.motor_drv_val.Ua,
+                        vfoc_m0_dt.motor_drv_val.Ub,
+                        vfoc_m0_dt.motor_drv_val.Uc,
+
+                        vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ua,
+                        vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Ub,
+                        vfoc_m0_dt.motor_drv_val.pwm_duty_val.duty_Uc
+                        
+                    );
+                    
+                    log_cnt = 0;
+                }
+            #endif
+
+            /*
+            * 量产代码里，不建议 1ms 打一次日志。
+            * 这里只在异常时打。
+            */
+            if ((svpwm_status != VFOC_STATUS_OK) &&
+                (svpwm_status != VFOC_STATUS_SATURATED))
+            {
+                ESP_LOGE(TAG, "SVPWM error, status=%d", (int)svpwm_status);
+            }
         #endif
 
         
@@ -1167,7 +1228,7 @@ void foc_task(void *arg)
             {
                 ESP_LOGW(
                     TAG,
-                    "foc_ovr_tie(%.1f):%lldus,index:%lld\r\n",
+                    "foc_ovr_tie(%.4f):%lldus,index:%lld\r\n",
                     // "(%.1f)%lldus,%lld\r\n",
                     (float)(M0_PWM_TASK_T),
                     foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt,
