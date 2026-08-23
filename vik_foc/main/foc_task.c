@@ -84,7 +84,7 @@ const static char *TAG = "FOC_TASK";
  *   初始值NULL表示未创建任务 */
 TaskHandle_t foc_task_handle = NULL;
 
-#ifdef TASK_RUNTIME_STATIS
+#if (TASK_RUNTIME_STATIS==1)
     vfoc_time_stamp_t foc_time_stamp={0};
     vfoc_time_stamp_t curent_loop_time_stamp={0};
     vfoc_time_stamp_t sped_loop_time_stamp={0};
@@ -95,25 +95,6 @@ vfoc_pid_t curent_loop_iq_pid = {0};
 vfoc_pid_t curent_loop_id_pid = {0};
 vfoc_pid_t speed_loop_pid = {0};
 vfoc_pid_t postion_loop_pid = {0};
-
-
-park_parm_t curent_loop_park = {
-    .Uq =0.0f,
-    .Ud =0.0f,
-    .id=0.0f,
-    .iq=0.0f
-};
-
-
-/**
- * @brief 获取clark-park-位置/速度/电流环PID运算后的uq,ud值
- * 
- * @return park_parm_t 
- */
-park_parm_t vfoc_get_uqd(void)
-{
-    return curent_loop_park;
-}
 
 
 
@@ -188,11 +169,15 @@ static inline float current_lpf(float in, float old)
 /**
  * @brief 位置环PD控制(不基于电流环，输出结果直接作用于Uq)
  * 
- * @param exp_postion_deg
+ * @param exp_postion_deg 
+ * @param now_postion_deg 
+ * @return park_parm_t 
  */
-void vfoc_postion_loop(float exp_postion_deg)
+park_parm_t vfoc_postion_loop(float exp_postion_deg, float now_postion_deg)
 {
-    #ifdef TASK_RUNTIME_STATIS
+    park_parm_t l_postion_lop_park = {0.0f};
+
+    #if (TASK_RUNTIME_STATIS==1)
         ++sped_postion_time_stamp.index;
         sped_postion_time_stamp.index %= TIME_STAMP_SIZE;
         sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % (TIME_STAMP_SIZE)].strat_t = esp_timer_get_time();
@@ -219,22 +204,9 @@ void vfoc_postion_loop(float exp_postion_deg)
     /*设置转速期望值*/
     LIMIT_EXP_MECH_360(exp_postion_deg);
     postion_loop_pid.exp_v = (exp_postion_deg);
-
-    float m0_mch_postion_deg = 0.0f;
-
-    if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
-    {
-        ESP_LOGW(
-            TAG,
-            "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
-            uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
-        );
-    }
-
     
     /*获取当前角度位置*/
-    postion_loop_pid.now_v = m0_mch_postion_deg;
+    postion_loop_pid.now_v = now_postion_deg;
     // postion_loop_pid.now_v = get_vfoc_theta_m_deg();
 
     /*角度误差 = 期望值-实际值*/
@@ -255,12 +227,12 @@ void vfoc_postion_loop(float exp_postion_deg)
     postion_loop_pid.last_err_v = postion_loop_pid.err_v;
 
     #if 1
-        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
-        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
-        curent_loop_park.Uq = postion_loop_pid.pid_out;
-        curent_loop_park.Ud = 0.0f;
+        // l_postion_lop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
+        // l_postion_lop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
+        l_postion_lop_park.Uq = postion_loop_pid.pid_out;
+        l_postion_lop_park.Ud = 0.0f;
 
-        // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
+        // l_postion_lop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
         static float temp_uq = 0.0f;
         temp_uq+=0.001f;
@@ -268,15 +240,15 @@ void vfoc_postion_loop(float exp_postion_deg)
         {
             temp_uq=0.0f;
         }
-        curent_loop_park.Uq = temp_uq;
-        // curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Uq = +3.0f;
-        curent_loop_park.Ud = 0.0f;
+        l_postion_lop_park.Uq = temp_uq;
+        // l_postion_lop_park.Uq = UQ_LIMIT;
+        l_postion_lop_park.Uq = +3.0f;
+        l_postion_lop_park.Ud = 0.0f;
         
     #endif
-    curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
+    l_postion_lop_park.Uq = limit_float(l_postion_lop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
 
-    #ifdef TASK_RUNTIME_STATIS
+    #if (TASK_RUNTIME_STATIS==1)
         sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].end_t = esp_timer_get_time();
         sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].dt = 
             sped_postion_time_stamp.time[(sped_postion_time_stamp.index) % TIME_STAMP_SIZE].end_t -
@@ -296,7 +268,7 @@ void vfoc_postion_loop(float exp_postion_deg)
     #endif
 
     
-    #if 1
+    #if 0
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>10 ) 
@@ -313,7 +285,7 @@ void vfoc_postion_loop(float exp_postion_deg)
                 postion_loop_pid.kp_out,//3
                 postion_loop_pid.kd_out,//4
                 postion_loop_pid.pid_out,
-                curent_loop_park.Uq
+                l_postion_lop_park.Uq
             );
 
             // set_theta_e_offset_mech(get_theta_e_offset_mech()+10.0f);
@@ -326,7 +298,7 @@ void vfoc_postion_loop(float exp_postion_deg)
             //     // get_theta_e_offset_mech(),
             //     balance_vehicle_car.m0_e_ofset_rad,
             //     m0_mch_rpm,
-            //     curent_loop_park.Uq,
+            //     l_postion_lop_park.Uq,
 
             //     park_temp.iq,
             //     park_temp.id
@@ -336,6 +308,8 @@ void vfoc_postion_loop(float exp_postion_deg)
         }
     #endif
 
+    return l_postion_lop_park;
+
 }
 
 
@@ -344,12 +318,14 @@ void vfoc_postion_loop(float exp_postion_deg)
  * @brief 速度环PI控制(不基于电流环，输出结果直接作用于Uq)
  * 
  * @param exp_sped_rpm 
+ * @param now_sped_rpm 
+ * @return park_parm_t 
  */
-void vfoc_speed_loop(float exp_sped_rpm)
+park_parm_t vfoc_speed_loop(float exp_sped_rpm, float now_sped_rpm)
 {
-    float m0_mch_rpm = 0.0f;
+    park_parm_t l_sped_lop_park = {0.0f};
 
-    #ifdef TASK_RUNTIME_STATIS
+    #if (TASK_RUNTIME_STATIS==1)
         ++sped_loop_time_stamp.index;
         sped_loop_time_stamp.index %= TIME_STAMP_SIZE;
         sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % (TIME_STAMP_SIZE)].strat_t = esp_timer_get_time();
@@ -376,18 +352,8 @@ void vfoc_speed_loop(float exp_sped_rpm)
     /*设置转速期望值*/
     speed_loop_pid.exp_v = exp_sped_rpm;
 
-    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 5)!= pdPASS )
-    {
-        ESP_LOGW(
-            TAG,
-            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
-            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
-            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
-        );
-    }
-    // if(m0_mch_rpm<0) m0_mch_rpm = m0_mch_rpm*(-1);
     /*获取当前转速实际值*/
-    speed_loop_pid.now_v = m0_mch_rpm;
+    speed_loop_pid.now_v = now_sped_rpm;
 
     /*计算转速误差 = 期望值-实际值*/
     speed_loop_pid.err_v = speed_loop_pid.exp_v - speed_loop_pid.now_v;
@@ -405,15 +371,13 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
     vfoc_pid_calt(&speed_loop_pid);
 
-    // speed_loop_pid.last_err_v = speed_loop_pid.err_v;
-
     #if 1
-        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
-        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
-        curent_loop_park.Uq = speed_loop_pid.pid_out;
-        curent_loop_park.Ud = 0.0f;
+        // l_sped_lop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
+        // l_sped_lop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
+        l_sped_lop_park.Uq = speed_loop_pid.pid_out;
+        l_sped_lop_park.Ud = 0.0f;
 
-        // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
+        // l_sped_lop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
         static float temp_uq = -6.5f;
         temp_uq+=0.0001f;
@@ -421,15 +385,15 @@ void vfoc_speed_loop(float exp_sped_rpm)
         {
             temp_uq=-6.5f;
         }
-        curent_loop_park.Uq = temp_uq;
-        // curent_loop_park.Uq = UQ_LIMIT;
-        // curent_loop_park.Uq = +3.0f;
-        curent_loop_park.Ud = 0.0f;
+        l_sped_lop_park.Uq = temp_uq;
+        // l_sped_lop_park.Uq = UQ_LIMIT;
+        l_sped_lop_park.Uq = +3.0f;
+        l_sped_lop_park.Ud = 0.0f;
         
     #endif
-    curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
-    // curent_loop_park.Uq *= (MOTOR0_UQ_DIR);
-    #ifdef TASK_RUNTIME_STATIS
+    l_sped_lop_park.Uq = limit_float(l_sped_lop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
+    // l_sped_lop_park.Uq *= (MOTOR0_UQ_DIR);
+    #if (TASK_RUNTIME_STATIS==1)
         sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].end_t = esp_timer_get_time();
         sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].dt = 
             sped_loop_time_stamp.time[(sped_loop_time_stamp.index) % TIME_STAMP_SIZE].end_t -
@@ -449,24 +413,24 @@ void vfoc_speed_loop(float exp_sped_rpm)
     #endif
 
     
-    #if 0
+    #if 1
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
-        if ( (log_cnt++)>10 ) 
+        if ( (log_cnt++)>100 ) 
         {
             log_cnt = 0;
             
             // ESP_LOGI(
             //     TAG,
             //     "vfoc_sped:%.4f,%.2f\r\n",
-            //     curent_loop_park.Uq,
+            //     l_sped_lop_park.Uq,
             //     speed_loop_pid.now_v
                 
             // );
 
             ESP_LOGI(
                 TAG,
-                "vfoc_sped: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f \r\n",
+                "vfoc_sped: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f, %.4f,%.4f \r\n",
                 speed_loop_pid.exp_v,//0
                 speed_loop_pid.now_v,//1
                 speed_loop_pid.err_v,
@@ -476,7 +440,9 @@ void vfoc_speed_loop(float exp_sped_rpm)
                 speed_loop_pid.pid_dt,//4
                 speed_loop_pid.ki_out,//5
                 speed_loop_pid.pid_out,/*speed_pid_out*/
-                curent_loop_park.Uq
+
+                l_sped_lop_park.Uq,
+                l_sped_lop_park.Ud
                 // park_temp.iq
             );
 
@@ -490,7 +456,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
             //     // get_theta_e_offset_mech(),
             //     balance_vehicle_car.m0_e_ofset_rad,
             //     m0_mch_rpm,
-            //     curent_loop_park.Uq,
+            //     l_sped_lop_park.Uq,
 
             //     park_temp.iq,
             //     park_temp.id
@@ -500,6 +466,7 @@ void vfoc_speed_loop(float exp_sped_rpm)
         }
     #endif
 
+    return l_sped_lop_park;
 }
 
 
@@ -507,19 +474,18 @@ void vfoc_speed_loop(float exp_sped_rpm)
 
 
 /**
- * @brief 电流环
+ * @brief 电流环(PI控制)
  * 
  * @param exp_iq 
  * @param exp_id 
+ * @param now_iq 
+ * @param now_id 
  */
-void vfoc_curent_loop(float exp_iq, float exp_id)
+park_parm_t vfoc_curent_loop(float exp_iq, float exp_id,float now_iq,float now_id)
 {
-    clark_parm_t clark_temp={0};
-    park_parm_t park_temp={0};
+    park_parm_t l_curent_loop_park = {0.0f};
 
-    static uint32_t log_cnt = 0;
-
-    #ifdef TASK_RUNTIME_STATIS
+    #if (TASK_RUNTIME_STATIS==1)
         ++curent_loop_time_stamp.index;
         curent_loop_time_stamp.index %= TIME_STAMP_SIZE;
         curent_loop_time_stamp.time[(curent_loop_time_stamp.index)%(TIME_STAMP_SIZE)].strat_t = esp_timer_get_time();/*角度值时间戳us*/
@@ -540,25 +506,6 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
         #endif
     #endif
 
-    /* clark变换,
-    输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
-    clark_temp = clark_tansform(
-        get_vfoc_ia_current(),
-        get_vfoc_ib_current(),
-        get_vfoc_ic_current()
-    );
-
-    /* park变换
-    * 输入两相静止坐标系电流 I_alpha、I_beta，
-    * 结合当前电角度 theta_e_rad，
-    * 计算旋转坐标系下的 Id、Iq。
-    * */
-    park_temp = park_tansform(
-        clark_temp.I_alpha,
-        clark_temp.I_beta,
-        vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())
-        // 0.0f
-    );
 
 /*---------------------FOC-iq-PI-控制---------------------------*/
     curent_loop_iq_pid.pid_dt = CURRENT_LOOP_DT;
@@ -567,7 +514,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     6.93*0.071A=0.49A 或者直接uq=6.93V,测试堵转电流值*/
     curent_loop_iq_pid.exp_v = exp_iq;//0.30f;/*期望iq值*/
     // 正确滤波Park变换后的Iq反馈电流
-    curent_loop_iq_pid.now_v = park_temp.iq;/*这个不能滤波，这个iq值是当前最真实的数据反馈*/
+    curent_loop_iq_pid.now_v = now_iq;/*这个不能滤波，这个iq值是当前最真实的数据反馈*/
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_iq_pid.err_v = curent_loop_iq_pid.exp_v - curent_loop_iq_pid.now_v;
@@ -576,9 +523,6 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     curent_loop_iq_pid.kp = 13.35f;
     curent_loop_iq_pid.ki = 25918.0f;/*ki = R*2pi*fc，fc:电流环频率500HZ*/
     curent_loop_iq_pid.kd = 0.0f;
-
-    curent_loop_iq_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;/* Uqmax/Ki */
-    curent_loop_iq_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
 
     /*PID输出结果限幅*/
     curent_loop_iq_pid.pid_out_max = +UQ_LIMIT;
@@ -595,7 +539,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
 
     curent_loop_id_pid.exp_v = exp_id;/*期望id值*/
     /*当前实际的Uq值*/
-    curent_loop_id_pid.now_v = park_temp.id;/*这个不能滤波，这个id值是当前最真实的数据反馈*/
+    curent_loop_id_pid.now_v = now_id;/*这个不能滤波，这个id值是当前最真实的数据反馈*/
 
     /* 误差值 = 期望值-实际值 */
     curent_loop_id_pid.err_v = curent_loop_id_pid.exp_v - curent_loop_id_pid.now_v;
@@ -604,9 +548,6 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     curent_loop_id_pid.kp = 13.35f;
     curent_loop_id_pid.ki = 25918.0f;
     curent_loop_id_pid.kd = 0.0f;
-
-    curent_loop_id_pid.ki_integral_min = -CURENT_I_OUT_LIMIT;
-    curent_loop_id_pid.ki_integral_max = +CURENT_I_OUT_LIMIT;
     
     curent_loop_id_pid.pid_out_max = +UQ_LIMIT;
     curent_loop_id_pid.pid_out_min = -UQ_LIMIT;
@@ -615,20 +556,20 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     vfoc_pid_calt(&curent_loop_id_pid);
 /*---------------------FOC-id-PI-控制---------------------------*/
     #if 0
-        // curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
-        // curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
-        curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
-        curent_loop_park.Ud = 0.0f;
+        // l_curent_loop_park.Uq = (curent_loop_iq_pid.pid_out*MOTOR0_FORWARD_IQ_DIR);
+        // l_curent_loop_park.Uq = curent_loop_iq_pid.pid_out + get_q_cross_couple(&vfoc_m0_dt);
+        l_curent_loop_park.Uq = curent_loop_iq_pid.pid_out;
+        l_curent_loop_park.Ud = 0.0f;
 
-        // curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
+        // l_curent_loop_park.Ud = curent_loop_id_pid.pid_out + get_d_cross_couple(&vfoc_m0_dt);
     #else
-        // curent_loop_park.Uq = UQ_LIMIT;
-        curent_loop_park.Uq = +6.0f;
-        curent_loop_park.Ud = 0.0f;
+        // l_curent_loop_park.Uq = UQ_LIMIT;
+        l_curent_loop_park.Uq = +6.0f;
+        l_curent_loop_park.Ud = 0.0f;
     #endif
-    curent_loop_park.Uq = limit_float(curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
+    l_curent_loop_park.Uq = limit_float(l_curent_loop_park.Uq, -UQ_LIMIT, +UQ_LIMIT);
     
-    #ifdef TASK_RUNTIME_STATIS
+    #if (TASK_RUNTIME_STATIS==1)
         /*更新误差值*/
         curent_loop_iq_pid.last_err_v = curent_loop_iq_pid.err_v;
         curent_loop_id_pid.last_err_v = curent_loop_id_pid.err_v;
@@ -657,6 +598,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
     #endif
 
     #if 1
+        static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>1000 ) 
         {
@@ -673,9 +615,9 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
             //     speed_loop_pid.pid_out,/*iqref*/
             //     curent_loop_iq_pid.exp_v,/*iqref*/
             //     curent_loop_iq_pid.now_v,/*iq*/
-            //     curent_loop_park.Uq /*uq*/
+            //     l_curent_loop_park.Uq /*uq*/
             //     // curent_loop_iq_pid.now_v,/*iq*/
-            //     // curent_loop_park.Uq
+            //     // l_curent_loop_park.Uq
             //     // vfoc_get_uqd().Uq
                 
             // );
@@ -687,8 +629,8 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
                 "iq: %.2f,%.2f,%.2f, %.2f\r\n",
                 curent_loop_iq_pid.exp_v,//0
                 curent_loop_iq_pid.now_v,//1
-                park_temp.iq,
-                curent_loop_park.Uq//2  
+                now_iq,
+                l_curent_loop_park.Uq//2  
 
                 // (curent_loop_iq_pid.kp_out + curent_loop_iq_pid.ki_out + curent_loop_iq_pid.kd_out)
                 // park_temp.Uq,
@@ -699,7 +641,7 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
                 // curent_loop_id_pid.exp_v,//3
                 // // park_temp.Ud,
                 // curent_loop_id_pid.now_v, //4
-                // curent_loop_park.Ud,
+                // l_curent_loop_park.Ud,
                 // get_vfoc_theta_e_w(&vfoc_m0_dt),
                 // vfoc_m0_dt.motor_drv_val.w_e
             );
@@ -788,6 +730,8 @@ void vfoc_curent_loop(float exp_iq, float exp_id)
         }
 
     #endif
+
+    return l_curent_loop_park;
 }
 
 #endif
@@ -928,11 +872,17 @@ void foc_task(void *arg)
 
     uint8_t sensor_les_flag = 0;
 
+    park_parm_t foc_lop_out = {0.0f};/*FOC三环输出的uq/ud*/
+
+    float m0_mch_rpm = 0.0f;
+    float m0_mch_postion_deg = 0.0f;
+
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        #ifdef TASK_RUNTIME_STATIS
+        #if (TASK_RUNTIME_STATIS==1)
+
             ++foc_time_stamp.index;
             foc_time_stamp.index %= TIME_STAMP_SIZE;
             foc_time_stamp.time[(foc_time_stamp.index)%(TIME_STAMP_SIZE)].strat_t = esp_timer_get_time();/*角度值时间戳us*/
@@ -957,15 +907,16 @@ void foc_task(void *arg)
 
         #endif
 
-        /* clark变换,
-        输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
-        clark_temp = clark_tansform(
-            get_vfoc_ia_current(),
-            get_vfoc_ib_current(),
-            get_vfoc_ic_current()
-        );
         
         #if (FOC_SENSOR_LESS_EN == 1)
+
+            /* clark变换,
+            输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
+            clark_temp = clark_tansform(
+                get_vfoc_ia_current(),
+                get_vfoc_ib_current(),
+                get_vfoc_ic_current()
+            );
 
             if ( (smo_theta_e<=FOC_2PI ) && (!sensor_les_flag))
             {
@@ -1000,17 +951,19 @@ void foc_task(void *arg)
         #else
             sensor_theta_e = vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
         #endif
-
-        /* park变换
-        * 输入两相静止坐标系电流 I_alpha、I_beta，
-        * 结合当前电角度 theta_e_rad，
-        * 计算旋转坐标系下的 Id、Iq。
-        * */
-        park_temp = park_tansform(
-            clark_temp.I_alpha,
-            clark_temp.I_beta,
-            sensor_theta_e
-        );
+        
+        #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
+            /* park变换
+            * 输入两相静止坐标系电流 I_alpha、I_beta，
+            * 结合当前电角度 theta_e_rad，
+            * 计算旋转坐标系下的 Id、Iq。
+            * */
+            park_temp = park_tansform(
+                clark_temp.I_alpha,
+                clark_temp.I_beta,
+                sensor_theta_e
+            );
+        #endif
 
         // if ( 0 )
         if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
@@ -1033,10 +986,22 @@ void foc_task(void *arg)
                 case 20:{/* 20KHZ/2= 10KHZ*/
 
                     #if (VFOC_CURENT_LOOP_EN == 1)
-                        // iq_ref = vfoc_speed_loop_base_curent(motor_exp_rpm);
+
                     #else
-                        motor_exp_rpm=300.0f;
-                        vfoc_speed_loop(motor_exp_rpm);
+                        #if 1
+                            /*接收机械转速*/
+                            if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 5)!= pdPASS )
+                            {
+                                ESP_LOGW(
+                                    TAG,
+                                    "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
+                                    uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+                                    uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+                                );
+                            }
+                            motor_exp_rpm=400.0f;
+                            foc_lop_out = vfoc_speed_loop(motor_exp_rpm,m0_mch_rpm);
+                        #endif
                     #endif
                     freq_1KHZ_cnt = 0;
                     break;
@@ -1052,8 +1017,21 @@ void foc_task(void *arg)
             switch ((++freq_200HZ_cnt))
             {
                 case 100:{/* 20KHZ/100= 200HZ*/
-                    motor_exp_pos_deg =185.0f;
-                    // vfoc_postion_loop(motor_exp_pos_deg);
+
+                    #if 0
+                        /*接收机械角度数据*/
+                        if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
+                        {
+                            ESP_LOGW(
+                                TAG,
+                                "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+                                uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+                                uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
+                            );
+                        }
+                        motor_exp_pos_deg =150.0f;
+                        foc_lop_out = vfoc_postion_loop(motor_exp_pos_deg, m0_mch_postion_deg);
+                    #endif
                     freq_200HZ_cnt = 0;
                     break;
                 }
@@ -1064,8 +1042,15 @@ void foc_task(void *arg)
             }
 
             #if (VFOC_CURENT_LOOP_EN == 1)/*20KHZ运行*/
-                // iq_ref = 0.3f;
-                vfoc_curent_loop(iq_ref, 0.0f);
+                iq_ref = 0.3f;
+                // foc_lop_out.Uq = 3.0f;
+                // foc_lop_out.Ud = 0.0f;
+                foc_lop_out = vfoc_curent_loop(
+                    iq_ref,
+                    0.0f,
+                    park_temp.iq,
+                    park_temp.id
+                );
             #else
                 void;
             #endif
@@ -1097,11 +1082,8 @@ void foc_task(void *arg)
             *      Ud = 0
             *      Uq = 给定测试电压
             */
-            vfoc_m0_dt.park_val.Uq = curent_loop_park.Uq;
-            vfoc_m0_dt.park_val.Ud = curent_loop_park.Ud;
-
-            /*获取电角度弧度制*/
-            // vfoc_m0_dt.motor_par.theta_e = vfoc_calc_theta_e_rad();
+            vfoc_m0_dt.park_val.Uq = foc_lop_out.Uq;
+            vfoc_m0_dt.park_val.Ud = foc_lop_out.Ud;
 
             /*
             * 3. 逆 Park：
@@ -1217,41 +1199,6 @@ void foc_task(void *arg)
             vfoc_get_pwm_duty().duty_Ub,
             vfoc_get_pwm_duty().duty_Uc
         );
-
-        #ifdef TASK_RUNTIME_STATIS
-            foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t = esp_timer_get_time();/*角度值时间戳us*/
-            foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt = 
-                foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t - 
-                foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].strat_t;/*角度值时间戳us*/
-
-            if ( foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt > (M0_PWM_TASK_T) )
-            {
-                ESP_LOGW(
-                    TAG,
-                    "foc_ovr_tie(%.4f):%lldus,index:%lld\r\n",
-                    // "(%.1f)%lldus,%lld\r\n",
-                    (float)(M0_PWM_TASK_T),
-                    foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt,
-                    foc_time_stamp.index
-                );
-            }
-            
-            #if 0 /*任务运行时长统计*/
-                if ( foc_time_stamp.index == 20 )
-                {
-                    ESP_LOGW(
-                        TAG,
-                        "foc_task_DT: %lld\r\n",
-                        foc_time_stamp.time[(foc_time_stamp.index) % TIME_STAMP_SIZE].dt
-                        // foc_time_stamp.time[(foc_time_stamp.index) % TIME_STAMP_SIZE].dt,
-                        // curent_loop_time_stamp.time[(curent_loop_time_stamp.index-2)%TIME_STAMP_SIZE].dt,
-                        // sped_loop_time_stamp.time[(sped_loop_time_stamp.index-3)%TIME_STAMP_SIZE].dt
-
-                    );
-                    foc_time_stamp.index = 0;
-                }
-            #endif
-        #endif
                                           
         #if 0
             // if ( (t_index==6) && ((log_cnt++)>1000) )
@@ -1355,7 +1302,45 @@ void foc_task(void *arg)
             }
             
         #endif
+
         
+        #if (TASK_RUNTIME_STATIS==1)
+        
+            foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t = esp_timer_get_time();/*角度值时间戳us*/
+            foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt = 
+                foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t - 
+                foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].strat_t;/*角度值时间戳us*/
+
+            if ( foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt > (M0_PWM_TASK_T) )
+            {
+                ESP_LOGW(
+                    TAG,
+                    "foc_over_time(%.4f):%lldus,index:%lld\r\n",
+                    // "(%.1f)%lldus,%lld\r\n",
+                    (float)(M0_PWM_TASK_T),
+                    foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt,
+                    foc_time_stamp.index
+                );
+            }
+            
+            #if 0 /*任务运行时长统计*/
+                if ( foc_time_stamp.index == 20 )
+                {
+                    ESP_LOGW(
+                        TAG,
+                        "foc_task_DT: %lld\r\n",
+                        foc_time_stamp.time[(foc_time_stamp.index) % TIME_STAMP_SIZE].dt
+                        // foc_time_stamp.time[(foc_time_stamp.index) % TIME_STAMP_SIZE].dt,
+                        // curent_loop_time_stamp.time[(curent_loop_time_stamp.index-2)%TIME_STAMP_SIZE].dt,
+                        // sped_loop_time_stamp.time[(sped_loop_time_stamp.index-3)%TIME_STAMP_SIZE].dt
+
+                    );
+                    foc_time_stamp.index = 0;
+                }
+            #endif
+        #endif
+        
+        // vTaskDelay( pdMS_TO_TICKS(1) );
     }
 
 }

@@ -302,7 +302,7 @@ theta = lp_filter_update(&angle_f, raw_angle);
  * */
 void lp_filter_init(lp_filter_t *f, float alpha);
 float lp_filter_update(lp_filter_t *f, float input);
-static inline float low_pas_filter(float alpha, float new_input, float old);
+float low_pas_filter(float alpha, float new_input, float old);
 
 
 /*-------------------低通滤波---------------------------*/

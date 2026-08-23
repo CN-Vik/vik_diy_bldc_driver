@@ -144,7 +144,7 @@ float lp_filter_update(lp_filter_t *f, float input)
  * @param old 上一次滤波后的输出值
  * @return float 当前滤波后的输出值
  */
-static inline float low_pas_filter(float alpha, float new_input, float old)
+float low_pas_filter(float alpha, float new_input, float old)
 {
     return old + alpha * (new_input - old);
 }
@@ -2016,7 +2016,7 @@ uint8_t SMO_Init(smo_ctrl_t *smo)
     smo->Rs = MOTOR_RS;
     smo->Ls = MOTOR_LS;
     smo->Ts = SMO_TS;
-    smo->k_smo = 0.3f;
+    smo->k_smo = 15.5f;
     smo->i_alpha_hat = 0.0f;
     smo->i_beta_hat = 0.0f;
     smo->ebmf_alpha = 0.0f;
