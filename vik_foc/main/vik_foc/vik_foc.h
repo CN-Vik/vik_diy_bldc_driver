@@ -382,6 +382,7 @@ float get_vfoc_ic_current(void);
 
 uint8_t SMO_Init(smo_ctrl_t *smo);
 float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, float i_beta);
+float calc_rpm_from_we(float we,float pole_pair);
 
 
 

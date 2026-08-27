@@ -2059,20 +2059,22 @@ float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, fl
     float i_alpha_err = smo->i_alpha_hat - i_alpha;
     float i_beta_err  = smo->i_beta_hat - i_beta;
 
-    // 2. 假定的反电动势值 (使用饱和函数平滑控制)
-    float ebmf_alpha_est = smo->k_smo * SMO_Sat(i_alpha_err, 0.5f);
-    float ebmf_beta_est  = smo->k_smo * SMO_Sat(i_beta_err, 0.5f);
-
-    // 3. 一阶离散化更新电流估计值: di/dt = (-Rs/Ls)*i + (u - ebmf_est)/Ls
+    float ebmf_alpha_est = 0.0f;
+    float ebmf_beta_est = 0.0f;
+    
+    // 2. 一阶离散化更新电流估计值: di/dt = (-Rs/Ls)*i + (u - ebmf_est)/Ls
     smo->i_alpha_hat += smo->Ts * ((-smo->Rs / smo->Ls) * smo->i_alpha_hat + (u_alpha - ebmf_alpha_est) / smo->Ls);
     smo->i_beta_hat  += smo->Ts * ((-smo->Rs / smo->Ls) * smo->i_beta_hat + (u_beta - ebmf_beta_est) / smo->Ls);
     
+    /*滑膜算法核心精髓，输入电流值和预算电流之间的误差，来反过来估算反电动势的准确度*/
+    // 3. 假定的反电动势值 (使用饱和函数平滑控制)
+    float ebmf_alpha_est = smo->k_smo * SMO_Sat(i_alpha_err, 0.5f);
+    float ebmf_beta_est  = smo->k_smo * SMO_Sat(i_beta_err, 0.5f);
 
     // 4. 一阶低通滤波器提取反电动势 e 
     smo->ebmf_alpha = low_pas_filter(0.45f,smo->ebmf_alpha, ebmf_alpha_est);
     smo->ebmf_beta = low_pas_filter(0.45f,smo->ebmf_beta, ebmf_beta_est);
-
-
+    
     // 5. 反正切求电角度: ebmf_alpha = -E*sin(theta), ebmf_beta = E*cos(theta)
     // 故 tan(theta) = -ebmf_alpha / ebmf_beta
     smo->theta_e = -atan2f(smo->ebmf_alpha, smo->ebmf_beta);
@@ -2088,6 +2090,155 @@ float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, fl
 /*-------SMO-滑膜观测器----------*/
 
 
+
+
+
+float PLL_Update(
+    pll_t *pll,
+    float Ealpha,
+    float Ebeta)
+{
+    //------------------------------------------------
+    // 1. 获取PLL当前角度
+    //------------------------------------------------
+
+    float theta = pll->theta;
+
+
+    //------------------------------------------------
+    // 2. 计算sin/cos
+    //------------------------------------------------
+
+    float sin_theta = sinf(theta);
+    float cos_theta = cosf(theta);
+
+
+    //------------------------------------------------
+    // 3. αβ → dq
+    //
+    // 使用PLL自己当前估计的角度
+    //------------------------------------------------
+
+    float Ed =
+          Ealpha * cos_theta
+        + Ebeta  * sin_theta;
+
+    float Eq =
+         -Ealpha * sin_theta
+        + Ebeta  * cos_theta;
+
+
+    //------------------------------------------------
+    // 4. 计算反电动势幅值
+    //------------------------------------------------
+
+    float E_mag =
+        sqrtf(
+            Ealpha * Ealpha +
+            Ebeta  * Ebeta
+        );
+
+
+    //------------------------------------------------
+    // 5. 归一化相位误差
+    //------------------------------------------------
+
+    float error;
+
+    if(E_mag > E_MIN)
+    {
+        error = Eq / E_mag;
+    }
+    else
+    {
+        error = 0.0f;
+    }
+
+
+    //------------------------------------------------
+    // 6. PLL PI积分
+    //------------------------------------------------
+
+    pll->integral +=
+        pll->ki *
+        error *
+        pll->Ts;
+
+
+    //------------------------------------------------
+    // 7. 得到估计电角速度
+    //------------------------------------------------
+
+    pll->omega =
+          pll->kp * error
+        + pll->integral;
+
+
+    //------------------------------------------------
+    // 8. 速度限幅
+    //------------------------------------------------
+
+    if(pll->omega > OMEGA_MAX)
+        pll->omega = OMEGA_MAX;
+
+    if(pll->omega < -OMEGA_MAX)
+        pll->omega = -OMEGA_MAX;
+
+
+    //------------------------------------------------
+    // 9. 积分得到电角度
+    //------------------------------------------------
+
+    pll->theta +=
+        pll->omega *
+        pll->Ts;
+
+
+    //------------------------------------------------
+    // 10. 角度Wrap
+    //------------------------------------------------
+
+    while(pll->theta >= TWO_PI)
+        pll->theta -= TWO_PI;
+
+    while(pll->theta < 0.0f)
+        pll->theta += TWO_PI;
+
+
+    //------------------------------------------------
+    // 11. 保存调试变量
+    //------------------------------------------------
+
+    pll->Ed = Ed;
+    pll->Eq = Eq;
+    pll->error = error;
+
+
+    //------------------------------------------------
+    // 12. 返回估计电角度
+    //------------------------------------------------
+
+    return pll->theta;
+}
+
+
+/*----------------------无感FOC--Sensor_less_FOC---------------------------*/
+
+/**
+ * @brief 通过电角速度计算机械转速
+ * 
+ * @param we 
+ * @return float 
+ */
+float calc_rpm_from_we(float we,float pole_pair)
+{
+    float n_mech_rpm;/*机械转速*/
+    
+    n_mech_rpm = (we/pole_pair)*(60/(2*FOC_2PI));
+
+    return n_mech_rpm;
+
+}
 
 
 /*----------------------无感FOC--Sensor_less_FOC---------------------------*/
