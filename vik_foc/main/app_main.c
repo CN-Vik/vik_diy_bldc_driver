@@ -52,6 +52,7 @@ void motor_ctrl_task(void)
     vfoc_init(&vfoc_m0_dt);
 
     SMO_Init(&vfoc_m0_dt.smo_val);/*滑膜观测器初始化*/
+    PLL_Init(&vfoc_m0_dt.pll_val);/*锁相环PLL初始化*/
 
     /*初始化 MOS enable GPIO,默认必须关闭 MOS*/
     motor_power_init();
