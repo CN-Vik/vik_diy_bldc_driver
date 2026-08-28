@@ -73,7 +73,7 @@ const static char *TAG = "FOC_TASK";
 /*开启电流环*/
 #define VFOC_CURENT_LOOP_EN    0
 
-#define FOC_SENSOR_LESS_EN     0
+#define FOC_SENSOR_LESS_EN     1
 
 /*浮点数专用的绝对值宏*/
 #define FABS(x) (((x) >= 0.0f ) ? (x) : -(x))
@@ -936,12 +936,18 @@ void foc_task(void *arg)
                 //     smo_theta_e
                 // );
 
-                smo_theta_e = SMO_Update(
+                SMO_Update(
                     &vfoc_m0_dt.smo_val,
                     l_temp_clark_v.I_alpha,
                     l_temp_clark_v.I_beta,
                     clark_temp.I_alpha,
                     clark_temp.I_beta
+                );
+
+               smo_theta_e = PLL_Update(
+                    &vfoc_m0_dt.pll_val,
+                    vfoc_m0_dt.smo_val.ebmf_alpha,
+                    vfoc_m0_dt.smo_val.ebmf_beta
                 );
 
             }

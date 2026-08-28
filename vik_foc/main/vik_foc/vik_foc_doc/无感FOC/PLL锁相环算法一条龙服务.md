@@ -1,3 +1,1606 @@
+# PLL误差计算如何选择Ed
+这次就可以**完全按照实际代码**来分析了，而且结论比刚才更有意思：
+
+> **你的 `atan2` 定义确实对应一个明确的 Eα/Eβ 坐标约定，因此如果 PLL 要“复现你当前 SMO 的 atan2 角度”，应该使用 Ed 型鉴相器。**
+>
+> **但是，你这个 SMO 本身还有一个结构性问题：`ebmf_est` 是在电流观测器更新之后才计算，而且下一次更新又被局部变量清零，因此它实际上没有形成标准 SMO 的反电动势反馈闭环。**
+
+这两个问题要分开看。
+
+---
+
+# 1. 先完全不看注释，只看数学代码
+
+你的代码核心是：
+
+```c
+i_alpha_err = i_alpha_est - i_alpha;
+i_beta_err  = i_beta_est - i_beta;
+```
+
+然后：
+
+```c
+ebmf_alpha_est =
+    k_smo * SMO_Sat(i_alpha_err, 0.5f);
+
+ebmf_beta_est =
+    k_smo * SMO_Sat(i_beta_err, 0.5f);
+```
+
+你的 `SMO_Sat()` 是：
+
+```c
+if (err > delta) return 1.0f;
+if (err < -delta) return -1.0f;
+return err / delta;
+```
+
+所以代码实际实现的是：
+
+$$
+\boxed{
+E_{\alpha,est}
+=
+k_{smo}\operatorname{sat}
+\left(
+\frac{\hat i_\alpha-i_\alpha}{0.5}
+\right)
+}
+$$
+
+$$
+\boxed{
+E_{\beta,est}
+=
+k_{smo}\operatorname{sat}
+\left(
+\frac{\hat i_\beta-i_\beta}{0.5}
+\right)
+}
+$$
+
+然后分别 LPF。
+
+所以：
+
+$$
+E_\alpha \leftrightarrow \hat i_\alpha-i_\alpha
+$$
+
+$$
+E_\beta \leftrightarrow \hat i_\beta-i_\beta
+$$
+
+**这就是你的 SMO 实际输出定义。**
+
+---
+
+# 2. 再看你的 atan2
+
+你最后：
+
+```c
+smo->theta_e =
+    -atan2f(smo->ebmf_alpha,
+            smo->ebmf_beta);
+```
+
+也就是：
+
+$$
+\boxed{
+\theta_{SMO}
+=
+-\operatorname{atan2}(E_\alpha,E_\beta)
+}
+$$
+
+这个公式可以转换成：
+
+$$
+\boxed{
+E_\alpha=-E\sin\theta_{SMO}
+}
+$$
+
+$$
+\boxed{
+E_\beta=E\cos\theta_{SMO}
+}
+$$
+
+注意：
+
+**这里不是看注释得到的，而是直接从你 `atan2` 的代码数学反推出来的。**
+
+所以我们现在终于可以把你的 PLL 鉴相器确定下来了。
+
+---
+
+# 3. 你的 PLL 应该用 Ed
+
+PLL自己维护：
+
+$$
+\hat\theta
+$$
+
+然后计算：
+
+$$
+\boxed{
+E_d=
+E_\alpha\cos\hat\theta+
+E_\beta\sin\hat\theta
+}
+$$
+
+把：
+
+$$
+E_\alpha=-E\sin\theta_{SMO}
+$$
+
+$$
+E_\beta=E\cos\theta_{SMO}
+$$
+
+代进去：
+
+$$
+E_d
+=
+-E\sin\theta_{SMO}\cos\hat\theta
++
+E\cos\theta_{SMO}\sin\hat\theta
+$$
+
+得到：
+
+$$
+\boxed{
+E_d=E\sin(\hat\theta-\theta_{SMO})
+}
+$$
+
+所以当：
+
+$$
+\hat\theta=\theta_{SMO}
+$$
+
+有：
+
+$$
+\boxed{E_d=0}
+$$
+
+这就是你要找的答案。
+
+---
+
+# 4. 所以你看到的那个公式也完全对应上了
+
+你之前看到：
+
+$$
+e=
+-E_\alpha\cos\hat\theta
+-E_\beta\sin\hat\theta
+$$
+
+而你的：
+
+$$
+E_d=
+E_\alpha\cos\hat\theta
++
+E_\beta\sin\hat\theta
+$$
+
+因此：
+
+$$
+\boxed{e=-E_d}
+$$
+
+所以这个所谓的：
+
+> “叉乘鉴相器”
+
+在你这个具体公式里，本质就是：
+
+$$
+\boxed{-Ed}
+$$
+
+然后：
+
+$$
+e
+=
+-E\sin(\hat\theta-\theta_{SMO})
+$$
+
+等价于：
+
+$$
+\boxed{
+e=E\sin(\theta_{SMO}-\hat\theta)
+}
+$$
+
+小角度：
+
+$$
+\boxed{
+e\approx E(\theta_{SMO}-\hat\theta)
+}
+$$
+
+如果归一化：
+
+$$
+\boxed{
+e\approx\theta_{SMO}-\hat\theta
+}
+$$
+
+这就和你之前看到的：
+
+$$
+e\approx E_m(\theta-\hat\theta)
+$$
+
+完全对上了。
+
+---
+
+# 5. 但是这里有个非常重要的细节
+
+你之前说：
+
+> PLL是不是让自己的 d 轴对准反电动势？
+
+对于**你的代码**，不要这么理解。
+
+你的 PLL 锁定时：
+
+$$
+E_d=0
+$$
+
+也就是：
+
+```text id="x7t7vz"
+                    E
+                    ↑
+                    │
+                    │
+                    │
+                    ●────────→ d
+                    PLL θ
+```
+
+换句话说：
+
+> **PLL 的 d 轴和 E 矢量正交。**
+
+所以更准确地说：
+
+$$
+\boxed{
+PLL\ d轴\rightarrow磁链方向
+}
+$$
+
+而：
+
+$$
+\boxed{
+反电动势\ E\rightarrow q轴
+}
+$$
+
+因此：
+
+$$
+E_d=0
+$$
+
+$$
+E_q\neq0
+$$
+
+这才是你这套定义。
+
+---
+
+# 6. 为什么 Eq 反而不能拿来当误差？
+
+你的 Park：
+
+$$
+E_q=
+-E_\alpha\sin\hat\theta
++
+E_\beta\cos\hat\theta
+$$
+
+代入：
+
+$$
+E_\alpha=-E\sin\theta
+$$
+
+$$
+E_\beta=E\cos\theta
+$$
+
+得到：
+
+$$
+E_q
+=
+E\sin\theta\sin\hat\theta
++
+E\cos\theta\cos\hat\theta
+$$
+
+所以：
+
+$$
+\boxed{
+E_q=E\cos(\theta-\hat\theta)
+}
+$$
+
+锁定时：
+
+$$
+\boxed{
+E_q=E
+}
+$$
+
+它不是 0。
+
+所以对于你的坐标定义：
+
+```text id="3d0p0t"
+Ed → 0       ← 相位误差
+Eq → |E|     ← 反电动势幅值
+```
+
+非常清楚。
+
+---
+
+# 7. 所以你现在的 PLL 可以直接这么写
+
+```c
+// SMO输出
+float Ealpha = smo->ebmf_alpha;
+float Ebeta  = smo->ebmf_beta;
+
+// PLL当前估计角度
+float theta = pll->theta_e;
+
+float sin_theta = sinf(theta);
+float cos_theta = cosf(theta);
+
+// Park
+float Ed = Ealpha * cos_theta
+         + Ebeta  * sin_theta;
+
+float Eq = -Ealpha * sin_theta
+         + Ebeta  * cos_theta;
+
+// 反电动势幅值
+float Emag = sqrtf(Ealpha * Ealpha +
+                   Ebeta  * Ebeta);
+
+// 鉴相误差
+float error = -Ed / Emag;
+```
+
+为什么我这里用了：
+
+```c
+error = -Ed / Emag;
+```
+
+因为：
+
+$$
+Ed=E\sin(\hat\theta-\theta)
+$$
+
+所以：
+
+$$
+-\frac{Ed}{E}
+=
+\sin(\theta-\hat\theta)
+$$
+
+小角度：
+
+$$
+\boxed{
+error\approx\theta-\hat\theta
+}
+$$
+
+这就是一个非常标准、直观的 PLL 误差定义。
+
+---
+
+# 8. 然后 PI
+
+```c
+pll->integral += pll->ki * error * pll->Ts;
+
+pll->omega_e =
+    pll->kp * error +
+    pll->integral;
+```
+
+然后：
+
+```c
+pll->theta_e += pll->omega_e * pll->Ts;
+```
+
+最后：
+
+```c
+if (pll->theta_e >= 2.0f * FOC_PI)
+    pll->theta_e -= 2.0f * FOC_PI;
+
+if (pll->theta_e < 0.0f)
+    pll->theta_e += 2.0f * FOC_PI;
+```
+
+整个：
+
+```text id="gq7yjh"
+             你的SMO
+                │
+                ↓
+          Eα       Eβ
+            \     /
+             \   /
+              PLL
+               │
+        ┌──────┴──────┐
+        │             │
+        ↓             ↓
+       Ed             Eq
+        │              │
+        ↓              ↓
+    相位误差         幅值
+        │
+        ↓
+       PI
+        │
+        ↓
+       ωe
+        │
+        ↓
+       ∫
+        │
+        ↓
+      θPLL
+```
+
+---
+
+# 9. 但是，现在真正的大问题来了
+
+你这个代码：
+
+```c
+float ebmf_alpha_est = 0.0f;
+float ebmf_beta_est = 0.0f;
+```
+
+每次进入 `SMO_Update()` 都重新：
+
+$$
+E_{\alpha,est}=0
+$$
+
+$$
+E_{\beta,est}=0
+$$
+
+然后你用它更新：
+
+```c
+smo->i_alpha_est += Ts *
+(
+    -Rs/Ls * i_alpha_est
+    +
+    (u_alpha - ebmf_alpha_est)/Ls
+);
+```
+
+所以**这里使用的 `ebmf_alpha_est` 永远是 0。**
+
+也就是说你的实际代码等价于：
+
+$$
+\boxed{
+\hat i_\alpha[k+1]
+=
+\hat i_\alpha[k]
++
+T_s
+\left(
+-\frac{R}{L}\hat i_\alpha
++
+\frac{u_\alpha}{L}
+\right)
+}
+$$
+
+β轴同理。
+
+然后更新完电流之后，你才计算：
+
+$$
+E_{\alpha,est}
+=
+k\operatorname{sat}(\hat i_\alpha-i_\alpha)
+$$
+
+所以你的流程实际上是：
+
+```text id="k17n7j"
+       u
+       │
+       ↓
+   电流模型
+       │
+       ↓
+      ihat
+       │
+       ↓
+   ihat - i
+       │
+       ↓
+      Sat
+       │
+       ↓
+      E估计
+       │
+       ↓
+      LPF
+       │
+       ↓
+      atan2
+```
+
+但这个 E：
+
+```text id="q6j9d3"
+      E估计
+        │
+        X
+        │
+        └──没有反馈回下一次电流模型
+```
+
+---
+
+# 10. 这意味着什么？
+
+这意味着：
+
+> **你现在的代码可以产生某种“基于电流误差的信号”，但它并不是一个完整的经典 SMO 结构。**
+
+所以现在最危险的事情就是：
+
+> **拿这个 Eα/Eβ 去认真设计 PLL，然后发现 PLL 怎么都调不好。**
+
+因为 PLL 本身可能没问题，问题可能出在前面的 SMO。
+
+---
+
+# 11. 另外，你的 `k_smo = 15.5f` 也值得注意
+
+现在：
+
+```c
+smo->k_smo = 15.5f;
+```
+
+而：
+
+```c
+SMO_Sat()
+```
+
+最大输出：
+
+$$
+1
+$$
+
+所以：
+
+$$
+|E_{\alpha,est}|\le15.5
+$$
+
+$$
+|E_{\beta,est}|\le15.5
+$$
+
+这至少说明你的 E 估计输出上限是：
+
+$$
+\boxed{15.5}
+$$
+
+但这个参数是否合理，**不能只看电机的 12V 母线**。
+
+它必须和：
+
+$$
+\frac{di}{dt}
+$$
+
+以及：
+
+$$
+\frac{u-Ri}{L}
+$$
+
+的实际量级匹配。
+
+---
+
+# 12. 所以我们现在把结论分成两层
+
+### 第一层：PLL问题
+
+这个已经基本确定：
+
+$$
+\boxed{
+你的代码角度定义
+\rightarrow
+Ed型PLL
+}
+$$
+
+推荐：
+
+$$
+\boxed{
+error=-\frac{Ed}{|E|}
+}
+$$
+
+然后：
+
+$$
+\boxed{
+error\rightarrow PI\rightarrow\omega_e\rightarrow\int\rightarrow\theta_{PLL}
+}
+$$
+
+---
+
+### 第二层：SMO问题
+
+这个才是你现在真正需要继续检查的：
+
+```c
+ebmf_alpha_est
+ebmf_beta_est
+```
+
+**没有参与下一次 `i_alpha_est/i_beta_est` 更新。**
+
+所以你当前 SMO 的结构有问题。
+
+---
+
+## 最后给你一个非常重要的认识
+
+以后你看到：
+
+$$
+Ed
+$$
+
+$$
+Eq
+$$
+
+$$
+-E_\alpha\cos\theta-E_\beta\sin\theta
+$$
+
+$$
+E_\alpha\sin\theta-E_\beta\cos\theta
+$$
+
+甚至：
+
+$$
+E_\alpha\sin\theta-E_\beta\cos\theta
+$$
+
+**都不要先问“哪个 PLL 才是正确的”。**
+
+直接做一件事：
+
+> **把它展开，看锁定以后这个鉴相器是不是趋近 0。**
+
+你的代码现在展开以后：
+
+$$
+\boxed{
+Ed=E\sin(\hat\theta-\theta)
+}
+$$
+
+所以：
+
+$$
+\boxed{Ed\rightarrow0}
+$$
+
+这就确定了。
+
+**但是下一步我建议先别调 PLL 的 Kp/Ki。先把你这个 SMO 改成真正闭环的标准结构，否则 PLL 调参是在给一个有问题的 Eα/Eβ 信号擦屁股。**
+
+
+
+------------
+---------
+---------
+
+对，你现在之所以被 **Ed、Eq、叉乘鉴相器** 搞懵，核心原因其实就一个：
+
+> **这些 PLL 并不是三个完全不同的算法，而是在“反电动势矢量怎么定义、PLL 的 d/q 轴怎么定义”不同的情况下，对同一个“相位误差”用了不同的数学表达。**
+
+你上传的几份资料里，实际上已经把这个问题暴露得很明显：有的地方采用 `Ed`，有的地方采用 `Eq`，而且资料自己也指出，究竟用哪个取决于 `Eα/Eβ` 的定义。
+
+我给你**彻底统一成一套逻辑**。
+
+---
+
+# 先给你最终结论
+
+对于你现在这个 **SMO + PLL**，最重要的不是记：
+
+> “PLL到底用 Ed 还是 Eq？”
+
+而是记：
+
+> **PLL鉴相器的本质，就是判断“SMO反电动势矢量”和“PLL自己认为的方向”之间差了多少角度。**
+
+数学上本质都是：
+
+$$
+\boxed{error\propto \sin(\theta-\hat\theta)}
+$$
+
+小角度时：
+
+$$
+\boxed{error\approx \theta-\hat\theta}
+$$
+
+然后：
+
+$$
+error
+\rightarrow PI
+\rightarrow \omega_e
+\rightarrow 积分
+\rightarrow \hat\theta
+$$
+
+这才是 PLL 的灵魂。
+
+---
+
+# 一、先把你现在的 SMO 定义钉死
+
+根据你上传的资料，你现在采用的是：
+
+$$
+\boxed{E_\alpha=-E\sin\theta_e}
+$$
+
+$$
+\boxed{E_\beta=E\cos\theta_e}
+$$
+
+也就是说：
+
+```text
+             β
+             ↑
+             │       E
+             │      ↗
+             │     /
+             │    /
+─────────────┼────────→ α
+             │
+```
+
+这里有个非常重要的东西：
+
+### 这个反电动势矢量并不是沿着转子 d 轴
+
+而是：
+
+$$
+\boxed{\theta_E=\theta_e+90^\circ}
+$$
+
+因为反电动势来自磁链微分，所以相对于磁链方向差 90°。你上传的推导也是这么得到的。
+
+所以：
+
+```text
+转子磁链方向：
+
+θe
+ ↗
+/
+
+反电动势方向：
+
+θe + 90°
+    ↗
+```
+
+这就是后面 Ed/Eq 容易混乱的根源。
+
+---
+
+# 二、你的 PLL 到底在干什么？
+
+PLL里面有一个自己产生的：
+
+$$
+\boxed{\hat\theta}
+$$
+
+它认为：
+
+> “我猜现在转子电角度是 \(\hat\theta\)。”
+
+于是 PLL 建立自己的 dq 坐标系：
+
+```text
+              q
+              ↑
+              │
+              │
+              │
+              +────────→ d
+             θhat
+```
+
+但是实际上你的反电动势应该在：
+
+$$
+\theta_e+90^\circ
+$$
+
+所以如果：
+
+$$
+\hat\theta=\theta_e
+$$
+
+那么：
+
+```text
+              E
+              ↑
+              │
+              │ q
+              │
+              +────────→ d
+```
+
+也就是：
+
+$$
+\boxed{E_d=0}
+$$
+
+而：
+
+$$
+\boxed{E_q=E}
+$$
+
+这点你的资料已经明确给出来了。
+
+---
+
+# 三、所以你的系统为什么应该用 Ed？
+
+标准 Park：
+
+$$
+E_d=E_\alpha\cos\hat\theta+
+E_\beta\sin\hat\theta
+$$
+
+把你的 SMO 定义：
+
+$$
+E_\alpha=-E\sin\theta_e
+$$
+
+$$
+E_\beta=E\cos\theta_e
+$$
+
+代进去：
+
+$$
+E_d
+=
+-E\sin\theta_e\cos\hat\theta
++
+E\cos\theta_e\sin\hat\theta
+$$
+
+整理：
+
+$$
+\boxed{
+E_d=E\sin(\hat\theta-\theta_e)
+}
+$$
+
+这就是关键。
+
+你上传的资料也完整推到了这个结果。
+
+当误差很小时：
+
+$$
+\sin x\approx x
+$$
+
+因此：
+
+$$
+\boxed{
+E_d\approx E(\hat\theta-\theta_e)
+}
+$$
+
+所以：
+
+> **Ed里面包含了PLL角度误差。**
+
+因此你现在这套定义：
+
+$$
+\boxed{error=\frac{E_d}{|E|}}
+$$
+
+是完全合理的。
+
+---
+
+# 四、那你看到的这个“叉乘鉴相器”到底是什么？
+
+你看到：
+
+$$
+e=-E_\alpha\cos\hat\theta-E_\beta\sin\hat\theta
+$$
+
+是不是感觉：
+
+> “卧槽，这跟 Ed 完全不是一个东西啊？”
+
+其实不是。
+
+看看你的：
+
+$$
+E_d=
+E_\alpha\cos\hat\theta+
+E_\beta\sin\hat\theta
+$$
+
+那么：
+
+$$
+\boxed{
+e=-E_d
+}
+$$
+
+就这么简单。
+
+所以你看到的：
+
+$$
+\boxed{
+e=-E_\alpha\cos\hat\theta
+-E_\beta\sin\hat\theta
+}
+$$
+
+本质就是：
+
+$$
+\boxed{e=-E_d}
+$$
+
+它只是**符号方向反了**。
+
+---
+
+# 五、但是这里还有一个“坑”：它为什么被叫做叉乘？
+
+这个地方我建议你不要被“叉乘”这个名字带跑。
+
+真正的二维向量叉乘，例如：
+
+$$
+\vec E=
+\begin{bmatrix}
+E_\alpha\\
+E_\beta
+\end{bmatrix}
+$$
+
+和 PLL d 轴单位向量：
+
+$$
+\vec d=
+\begin{bmatrix}
+\cos\hat\theta\\
+\sin\hat\theta
+\end{bmatrix}
+$$
+
+它们的二维叉乘标量实际上是：
+
+$$
+E_\alpha\sin\hat\theta
+-
+E_\beta\cos\hat\theta
+$$
+
+这实际上对应另外一个正交分量。
+
+所以严格来说，你贴出来的：
+
+$$
+-E_\alpha\cos\hat\theta
+-E_\beta\sin\hat\theta
+$$
+
+**从数学形式上更像是“点积/投影”，而不是传统意义上的叉乘。**
+
+也就是说，很多资料把“鉴相器”泛称成 phase detector，并不意味着它一定要真的做 vector cross product。
+
+---
+
+# 六、现在把三种写法放一起，你一下就明白了
+
+## ① 你的 Ed 鉴相器
+
+你的定义：
+
+$$
+E_\alpha=-E\sin\theta
+$$
+
+$$
+E_\beta=E\cos\theta
+$$
+
+然后：
+
+$$
+\boxed{
+E_d=
+E_\alpha\cos\hat\theta+
+E_\beta\sin\hat\theta
+}
+$$
+
+得到：
+
+$$
+\boxed{
+E_d=E\sin(\hat\theta-\theta)
+}
+$$
+
+所以：
+
+$$
+\boxed{
+error=E_d
+}
+$$
+
+或者归一化：
+
+$$
+\boxed{
+error=\frac{E_d}{|E|}
+}
+$$
+
+---
+
+## ② 你看到的负号版本
+
+$$
+\boxed{
+e=
+-E_\alpha\cos\hat\theta
+-E_\beta\sin\hat\theta
+}
+$$
+
+实际上：
+
+$$
+\boxed{e=-E_d}
+$$
+
+所以：
+
+$$
+e
+=
+-E\sin(\hat\theta-\theta)
+$$
+
+也就是：
+
+$$
+\boxed{
+e=E\sin(\theta-\hat\theta)
+}
+$$
+
+小角度：
+
+$$
+\boxed{
+e\approx\theta-\hat\theta
+}
+$$
+
+这反而是非常漂亮的“真实角度 - 估计角度”。
+
+所以很多论文喜欢写成这种形式：
+
+$$
+\boxed{error\approx\theta-\hat\theta}
+$$
+
+然后：
+
+$$
+error\rightarrow PI
+$$
+
+---
+
+# 七、那为什么还有人用 Eq？
+
+这才是你真正需要理解的。
+
+假设别人定义的反电动势不是：
+
+$$
+E_\alpha=-E\sin\theta
+$$
+
+而是：
+
+$$
+\boxed{
+E_\alpha=E\cos\theta
+}
+$$
+
+$$
+\boxed{
+E_\beta=E\sin\theta
+}
+$$
+
+那么这个反电动势矢量就直接沿着：
+
+$$
+\theta
+$$
+
+方向。
+
+这时候 PLL 的 d 轴如果对准 \(\hat\theta\)：
+
+```text
+              E
+             ↗
+            /
+           /
+----------+--------→ d
+```
+
+锁定时：
+
+$$
+E_d=E
+$$
+
+而：
+
+$$
+E_q=0
+$$
+
+所以这套定义自然就使用：
+
+$$
+\boxed{Eq}
+$$
+
+作为误差信号。
+
+这就是你资料里说的：
+
+> **到底用 Ed 还是 Eq，取决于你的 Eα/Eβ 定义。** 
+
+---
+
+# 八、所以千万别记“PLL = Eq”
+
+这是很多网上资料最容易误导人的地方。
+
+真正应该记的是：
+
+> **找那个“锁定以后应该等于 0”的分量。**
+
+比如：
+
+### 情况 A：你的 SMO
+
+$$
+E_\alpha=-E\sin\theta
+$$
+
+$$
+E_\beta=E\cos\theta
+$$
+
+那么：
+
+$$
+\boxed{E_d\rightarrow0}
+$$
+
+所以：
+
+$$
+\boxed{Ed\rightarrow PI}
+$$
+
+---
+
+### 情况 B：别人定义
+
+$$
+E_\alpha=E\cos\theta
+$$
+
+$$
+E_\beta=E\sin\theta
+$$
+
+那么：
+
+$$
+\boxed{E_q\rightarrow0}
+$$
+
+所以：
+
+$$
+\boxed{Eq\rightarrow PI}
+$$
+
+---
+
+# 九、你现在可以把所有 PLL 资料统一成这张图
+
+不管别人怎么写：
+
+```text
+             SMO
+              │
+              ↓
+           Eα / Eβ
+              │
+              ↓
+      ┌───────────────┐
+      │  Phase Detector│
+      │    鉴相器      │
+      └───────┬───────┘
+              │
+              ↓
+       相位误差 error
+              │
+              ↓
+             PI
+              │
+              ↓
+          ωe_est
+              │
+              ↓
+             ∫
+              │
+              ↓
+          θ_est
+              │
+              └──────────┐
+                         │
+                         ↓
+                   再次鉴相
+```
+
+真正的核心只有：
+
+$$
+\boxed{
+E_{\alpha\beta}
+\rightarrow
+相位误差
+\rightarrow
+PI
+\rightarrow
+\omega_e
+\rightarrow
+积分
+\rightarrow
+\hat\theta
+}
+$$
+
+---
+
+# 十、而你现在这套 PLL，我建议就别再搞 Eq 了
+
+你的 SMO 定义已经明确：
+
+$$
+\boxed{
+E_\alpha=-E\sin\theta_e
+}
+$$
+
+$$
+\boxed{
+E_\beta=E\cos\theta_e
+}
+$$
+
+那么直接固定：
+
+$$
+\boxed{
+E_d=
+E_\alpha\cos\hat\theta+
+E_\beta\sin\hat\theta
+}
+$$
+
+然后：
+
+$$
+\boxed{
+error=\frac{E_d}{|E|}
+}
+$$
+
+再：
+
+$$
+\boxed{
+\omega_e
+=
+K_p error+
+K_i\int error\,dt
+}
+$$
+
+最后：
+
+$$
+\boxed{
+\hat\theta[k]
+=
+\hat\theta[k-1]
++
+\omega_eT_s
+}
+$$
+
+这就是你现在应该使用的版本。
+
+你上传的代码资料实际上也是这么实现的：先算 `Ed/Eq`，然后使用 `Ed / Emag` 作为 PLL 相位误差。
+
+---
+
+# 十一、还有一个特别重要的修正
+
+你前面那句话：
+
+> “PLL让自己的 d 轴对准反电动势矢量。”
+
+**对于你当前这个定义，不准确。**
+
+应该改成：
+
+> **PLL让自己的 d 轴对准转子磁链方向，而你的反电动势矢量位于 q 轴方向。**
+
+也就是：
+
+```text
+              E / q轴
+              ↑
+              │
+              │
+              │
+              +
+              └────────→ d轴
+                       ↑
+                    θ_est
+```
+
+锁定：
+
+$$
+\boxed{E_d=0}
+$$
+
+$$
+\boxed{E_q=E}
+$$
+
+你的资料也明确给出了这个锁定关系。
+
+---
+
+# 十二、最后给你一个最简单的“防懵口诀”
+
+以后你再看到论文：
+
+### 看到 Ed：
+
+别管它。
+
+先问：
+
+> **Ed 锁定的时候是不是应该为 0？**
+
+如果是：
+
+$$
+Ed\rightarrow PI
+$$
+
+---
+
+### 看到 Eq：
+
+同样别管它。
+
+问：
+
+> **Eq 锁定的时候是不是应该为 0？**
+
+如果是：
+
+$$
+Eq\rightarrow PI
+$$
+
+---
+
+### 看到叉乘：
+
+也别管名字。
+
+直接把公式展开，看它最终是不是：
+
+$$
+\boxed{
+error\propto\sin(\theta-\hat\theta)
+}
+$$
+
+如果是：
+
+> **它就是 PLL 鉴相器。**
+
+---
+
+# 最终统一成一句话
+
+> **Ed、Eq、所谓“叉乘鉴相器”，本质都不是 PLL 的灵魂，它们只是根据不同的 αβ/ dq 定义，用不同方式提取“反电动势方向与 PLL 估计方向之间的相位误差”；真正的核心永远是 \(error\rightarrow PI\rightarrow\omega_e\rightarrow\int\rightarrow\theta_e\)。**
+
+而**针对你现在的 SMO 定义**：
+
+$$
+\boxed{E_\alpha=-E\sin\theta_e,\quad E_\beta=E\cos\theta_e}
+$$
+
+最清楚、最不容易错的一套就是：
+
+$$
+\boxed{
+E_d
+=
+E_\alpha\cos\hat\theta+
+E_\beta\sin\hat\theta
+}
+$$
+
+$$
+\boxed{
+error=\frac{E_d}{|E|}
+}
+$$
+
+$$
+\boxed{
+error\rightarrow PI\rightarrow\omega_e\rightarrow\int\rightarrow\hat\theta
+}
+$$
+
+而你看到的：
+
+$$
+\boxed{
+-E_\alpha\cos\hat\theta-E_\beta\sin\hat\theta
+}
+$$
+
+其实就只是：
+
+$$
+\boxed{-E_d}
+$$
+
+**所以你现在不用再纠结“Ed、Eq、叉乘到底哪个才是真的 PLL”。它们是在不同坐标/符号约定下，对同一个“相位误差”的不同写法。**
+
+
+
+
+-----------
+----------
+-----------
+
+
 FOC里的 **PLL锁相环（Phase Locked Loop）**，核心作用一句话：
 
 > **根据反电动势（或编码器信号）的相位误差，自动调整估计角速度，使内部产生的电角度跟踪真实电角度。**

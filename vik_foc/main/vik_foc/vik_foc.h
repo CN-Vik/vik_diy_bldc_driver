@@ -92,6 +92,7 @@ do {                                            \
 #define MOTOR_LS         (4.25f*1e-3f) /*电机相电感 4.25mH*/
 #define MOTOR_RS         (8.25f) /*电机相电阻 8.25欧姆*/
 #define SMO_TS            (1/20000.0f)
+#define PLL_TS            (1/20000.0f)
 
 /**
  * @brief 克拉克变换参数
@@ -199,8 +200,8 @@ typedef struct {
     float k_smo;       // 滑模控制增益
 
     // 内部状态变量
-    float i_alpha_hat; // alpha 轴估计电流 (A)
-    float i_beta_hat;  // beta 轴估计电流 (A)
+    float i_alpha_est; // alpha 轴估计电流 (A)
+    float i_beta_est;  // beta 轴估计电流 (A)
     float ebmf_alpha;     // 滤波后的 alpha 轴反电势 (V)
     float ebmf_beta;      // 滤波后的 beta 轴反电势 (V)
 
@@ -208,6 +209,33 @@ typedef struct {
     float theta_e;     // 输出电角度 (rad, [0, 2*PI])
 
 }smo_ctrl_t;
+
+
+typedef struct
+{
+    // PLL参数
+    float kp;
+    float ki;
+
+    // // 输入反电动势
+    // float Ealpha;
+    // float Ebeta;
+
+    float Ed;
+    float Eq;
+    float error;
+
+    // 输出
+    float theta_e;      // 电角度 rad
+    float we;      // 电角速度 rad/s
+
+    // 内部积分
+    float ki_integral;
+
+    // 时间
+    float Ts;
+
+} pll_t;
 
 
 /**
@@ -229,6 +257,7 @@ typedef struct
     motor_driver_parm_t motor_drv_val;
 
     smo_ctrl_t smo_val;
+    pll_t pll_val;
 
     /*电机实际硬件参数：（极对数，电角度，机械角度）*/
     motor_parm_t motor_par;
@@ -382,8 +411,8 @@ float get_vfoc_ic_current(void);
 
 uint8_t SMO_Init(smo_ctrl_t *smo);
 float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, float i_beta);
+float PLL_Update( pll_t *pll, float Ealpha, float Ebeta);
 float calc_rpm_from_we(float we,float pole_pair);
-
 
 
 
