@@ -2176,7 +2176,31 @@ float SMO_Update(smo_ctrl_t *smo,
         smo->theta_e -= 2.0f * FOC_PI;
     }
 
+    #if 0
+        static uint32_t log_cnt = 0;
+        if ( (log_cnt++)>10 ) 
+        {
 
+            
+            ESP_LOGI(
+                TAG,
+                "smo: %.3f,%.3f, %.3f,%.3f, %.3f,%.3f, \r\n",
+                smo->theta_e,
+
+                smo->i_alpha_est,
+                i_alpha,
+
+                smo->i_beta_est,
+                i_beta,
+
+                smo->ebmf_alpha,
+                smo->ebmf_beta
+            );
+
+            log_cnt = 0;
+        }
+    #endif
+    
     return smo->theta_e;
 }
 
@@ -2186,8 +2210,8 @@ float SMO_Update(smo_ctrl_t *smo,
 
 void PLL_Init(pll_t *pll)
 {
-    pll->kp = 200.0f;
-    pll->ki = 3553.0f;
+    pll->kp = 1500.0f;
+    pll->ki = 80000.0f;
 
     pll->Ed = 0.0f;
     pll->Eq = 0.0f;
@@ -2251,7 +2275,7 @@ float PLL_Update( pll_t *pll, float Ealpha, float Ebeta)
     //------------------------------------------------
     float error = 0.0f;
     /* 防止低速/停止时除0 */
-    if(E_mag > 0.1f)
+    if(E_mag > 0.0001f)
     {
         /*鉴相器*/
         error = -Ed / E_mag;
@@ -2310,6 +2334,22 @@ float PLL_Update( pll_t *pll, float Ealpha, float Ebeta)
     pll->Eq = Eq;
     pll->error = error;
 
+    #if 0
+        static uint32_t log_cnt = 0;
+        if ( (log_cnt++)>10 ) 
+        {
+            
+            ESP_LOGI(
+                TAG,
+                "pll: %.3f,%.3f,%.3f \r\n",
+                pll->theta_e,
+                pll->Ed,
+                pll->Eq
+            );
+
+            log_cnt = 0;
+        }
+    #endif
 
     //------------------------------------------------
     // 11. 返回估计电角度

@@ -413,7 +413,7 @@ park_parm_t vfoc_speed_loop(float exp_sped_rpm, float now_sped_rpm)
     #endif
 
     
-    #if 1
+    #if 0
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>100 ) 
@@ -868,6 +868,7 @@ void foc_task(void *arg)
     park_parm_t park_temp={0};
 
     float smo_theta_e = 0.0f;/*无感滑膜计算出来的电角度*/
+    float smo_pll_theta_e = 0.0f;/*无感滑膜计算出来的电角度*/
     float sensor_theta_e = 0.0f;/*编码器传感器计算的电角度*/
 
     uint8_t sensor_les_flag = 0;
@@ -908,7 +909,7 @@ void foc_task(void *arg)
         #endif
 
         
-        #if (FOC_SENSOR_LESS_EN == 1)
+        // #if (FOC_SENSOR_LESS_EN == 1)
 
             /* clark变换,
             输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
@@ -918,16 +919,17 @@ void foc_task(void *arg)
                 get_vfoc_ic_current()
             );
 
-            if ( (smo_theta_e<=FOC_2PI ) && (!sensor_les_flag))
-            {
-                smo_theta_e += 0.01f;
-                // ESP_LOGE(
-                //     TAG,
-                //     "foc_open_lop!,%.4f\r\n",
-                //     smo_theta_e
-                // );
+            // if ( (smo_theta_e<=FOC_2PI ) && (!sensor_les_flag))
+            // {
+            //     smo_theta_e += 0.01f;
+            //     // ESP_LOGE(
+            //     //     TAG,
+            //     //     "foc_open_lop!,%.4f\r\n",
+            //     //     smo_theta_e
+            //     // );
                 
-            }else{
+            // }else
+            {
 
                 sensor_les_flag = 1;
                 // ESP_LOGE(
@@ -936,7 +938,7 @@ void foc_task(void *arg)
                 //     smo_theta_e
                 // );
 
-                SMO_Update(
+                smo_theta_e = SMO_Update(
                     &vfoc_m0_dt.smo_val,
                     l_temp_clark_v.I_alpha,
                     l_temp_clark_v.I_beta,
@@ -944,7 +946,7 @@ void foc_task(void *arg)
                     clark_temp.I_beta
                 );
 
-               smo_theta_e = PLL_Update(
+                smo_pll_theta_e = PLL_Update(
                     &vfoc_m0_dt.pll_val,
                     vfoc_m0_dt.smo_val.ebmf_alpha,
                     vfoc_m0_dt.smo_val.ebmf_beta
@@ -952,11 +954,43 @@ void foc_task(void *arg)
 
             }
             
-            set_vfoc_theta_e_rad(smo_theta_e);
-            sensor_theta_e = smo_theta_e;/*更新电角度值*/
-        #else
-            sensor_theta_e = vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
-        #endif
+            // set_vfoc_theta_e_rad(smo_theta_e);
+            // sensor_theta_e = smo_theta_e;/*更新电角度值*/
+        // #else
+            /*接收机械角度数据*/
+            if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
+            {
+                ESP_LOGW(
+                    TAG,
+                    "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+                    uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+                    uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
+                );
+            }
+            sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
+
+            #if 1
+                static uint32_t log_cnt = 0;
+                if ( (log_cnt++)>10 ) 
+                {
+                    
+                    ESP_LOGI(
+                        TAG,
+                        "e: %.3f,%.3f,%.3f,%.3f \r\n",
+                        sensor_theta_e,
+                        smo_theta_e,
+                        // (sensor_theta_e-smo_theta_e)
+                        smo_pll_theta_e,
+                        vfoc_m0_dt.pll_val.Ed
+
+                    );
+    
+                    log_cnt = 0;
+                }
+            #endif
+
+        // #endif
+
         
         #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
             /* park变换
