@@ -2211,7 +2211,7 @@ float SMO_Update(smo_ctrl_t *smo,
 void PLL_Init(pll_t *pll)
 {
     pll->kp = 1500.0f;
-    pll->ki = 80000.0f;
+    pll->ki = 500000.0f;
 
     pll->Ed = 0.0f;
     pll->Eq = 0.0f;
@@ -2223,6 +2223,17 @@ void PLL_Init(pll_t *pll)
     pll->ki_integral = 0.0f;
 
     pll->Ts = PLL_TS;
+}
+
+
+
+// 在切入无感闭环的瞬间执行一次：
+void PLL_Set_Initial_Speed(pll_t *pll, float init_we)
+{
+    pll->we = init_we;             // 给当前实际/开环电转速 (rad/s)
+    pll->ki_integral = init_we;    // 预充积分器，避免从0慢爬
+    
+    // 如果知道当前的大致角度，也可以同步赋值 theta_e
 }
 
 /**
