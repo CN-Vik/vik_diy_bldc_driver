@@ -44,6 +44,14 @@ KV值： 110KV
 /*viK_foc_data变量*/
 foc_data_t vfoc_m0_dt={0};
 
+// 1. 在全局或初始化处定义并初始化
+vfoc_we_calc_t vfoc_we_calc_v = {
+    .last_theta_e = 0.0f,
+    .last_we = 0.0f,
+    .lpf_alpha = 0.05f,   // 滤波系数需要根据你的 dt 和系统噪声去调，通常 0.01~0.1 比较合适
+    .dt = M0_PWM_TASK_T         // 假设你的 FOC_TASK 是 10kHz 运行
+};
+
 
 /*-------------------低通滤波---------------------------*/
 void lp_filter_init(lp_filter_t *f, float alpha)
@@ -479,7 +487,7 @@ float vfoc_calc_theta_e_rad(float m_angle)
 
 
     /*设置vik_foc的电角度值，弧度制*/
-    set_vfoc_theta_e_rad(theta_e_rad);
+    // set_vfoc_theta_e_rad(theta_e_rad);
 
     return theta_e_rad;
 
@@ -1446,8 +1454,9 @@ void vfoc_set_svpwm(float uq,
     /*获取电角度弧度制*/
     // vfoc_m0_dt.motor_par.theta_e = vfoc_calc_theta_e_rad();
 
-    vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
-
+    set_vfoc_theta_e_rad( 
+        vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())/*更新电角度值*/
+    );
     /*
      * 3. 逆 Park：
      *      输入Ud/Uq + theta_e，输出Ualpha/Ubeta
@@ -1608,8 +1617,9 @@ void vfoc_set_spwm( float uq,
     vfoc_m0_dt.park_val.Uq = uq;
     vfoc_m0_dt.park_val.Ud = ud;
 
-    vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg());/*更新电角度值*/
-
+    set_vfoc_theta_e_rad( 
+        vfoc_calc_theta_e_rad(get_vfoc_theta_m_deg())/*更新电角度值*/
+    );
 
     /*
      * 3. Park逆变换：Id/Iq -> Ualpha/Ubeta
@@ -2387,5 +2397,47 @@ float calc_rpm_from_we(float we,float pole_pair)
 
 }
 
+
+/**
+ * @brief 根据电角度计算电角速度 (带有过零点处理和低通滤波)
+ * 
+ * @param we_calc       速度计算结构体指针
+ * @param current_theta_e 当前最新的电角度 (rad)，范围通常是 [0, 2PI] 或 [-PI, PI]
+ * @return float         计算出的当前电角速度 (rad/s)
+ */
+float vfoc_calc_we(vfoc_we_calc_t *we_calc, float current_theta_e)
+{
+    /* 1. 差分：求出本次角度变化量 */
+    float delta_theta = current_theta_e - we_calc->last_theta_e;
+
+    /* 2. 过零点(Wrap-around)处理，寻找最短路径
+     * 假设电角度是 0~2PI 跨越：
+     * 正转跨越：从 6.2 变到 0.1，delta = -6.1。加上 2PI 后，修正为真实的转动量 +0.183
+     * 反转跨越：从 0.1 变到 6.2，delta = +6.1。减去 2PI 后，修正为真实的转动量 -0.183
+     */
+    if (delta_theta > FOC_PI) 
+    {
+        delta_theta -= FOC_2PI;
+    } 
+    else if (delta_theta < -FOC_PI) 
+    {
+        delta_theta += FOC_2PI;
+    }
+
+    /* 3. 基础速度计算 (v = ds / dt) */
+    float raw_we = delta_theta / we_calc->dt;
+
+    /* 4. 一阶低通滤波 (必须加，否则微分出来的噪声会把系统弄崩溃) 
+     * out = alpha * new + (1 - alpha) * old;
+     * 变形写成：out = old + alpha * (new - old) 以减少乘法运算
+     */
+    float filter_we = we_calc->last_we + we_calc->lpf_alpha * (raw_we - we_calc->last_we);
+
+    /* 5. 更新历史状态，供下一次使用 */
+    we_calc->last_theta_e = current_theta_e;
+    we_calc->last_we = filter_we;
+
+    return filter_we; // 返回最终平滑的电角速度 (rad/s)
+}
 
 /*----------------------无感FOC--Sensor_less_FOC---------------------------*/

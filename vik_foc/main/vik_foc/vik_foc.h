@@ -320,8 +320,18 @@ typedef struct
 }vfoc_time_stamp_t;
 
 
-extern foc_data_t vfoc_m0_dt;
+typedef struct 
+{
+    float last_theta_e;   // 上一次的电角度 (rad)
+    float last_we;        // 上一次的滤波后角速度 (rad/s)
+    float lpf_alpha;      // 一阶低通滤波系数 (0.0~1.0，越小滤波越强)
+    float dt;             // 任务调用周期 (例如 10kHz就是 0.0001f)
 
+} vfoc_we_calc_t;
+
+
+extern foc_data_t vfoc_m0_dt;
+extern vfoc_we_calc_t vfoc_we_calc_v;
 
 
 
@@ -421,6 +431,7 @@ float SMO_Update(smo_ctrl_t *smo, float u_alpha, float u_beta, float i_alpha, fl
 float PLL_Update( pll_t *pll, float Ealpha, float Ebeta);
 void PLL_Init(pll_t *pll);
 float calc_rpm_from_we(float we,float pole_pair);
+float vfoc_calc_we(vfoc_we_calc_t *we_calc, float current_theta_e);
 
 
 

@@ -870,6 +870,7 @@ void foc_task(void *arg)
     float smo_theta_e = 0.0f;/*无感滑膜计算出来的电角度*/
     float smo_pll_theta_e = 0.0f;/*无感滑膜计算出来的电角度*/
     float sensor_theta_e = 0.0f;/*编码器传感器计算的电角度*/
+    float open_lop_theta_e = 0.0f;/*编码器传感器计算的电角度*/
 
     uint8_t sensor_les_flag = 0;
 
@@ -879,11 +880,6 @@ void foc_task(void *arg)
     float m0_mch_postion_deg = 0.0f;
 
     foc_state_t foc_state = FOC_STATE_ALIGN;
-
-    float open_loop_theta = 0.0f;       // 开环虚拟角度
-    float open_loop_we = 0.0f;          // 开环虚拟角速度 (rad/s)
-    float open_loop_accel = 1000.0f;    // 开环加速度 (rad/s^2)，根据电机负载调整
-    float target_iq_start = 2.0f;       // 启动时的拖动电流 (A)
 
     while (1)
     {
@@ -915,131 +911,101 @@ void foc_task(void *arg)
 
         #endif
 
-        
-        // #if (FOC_SENSOR_LESS_EN == 1)
+    
+        /* clark变换,
+        输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
+        clark_temp = clark_tansform(
+            get_vfoc_ia_current(),
+            get_vfoc_ib_current(),
+            get_vfoc_ic_current()
+        );
 
-            /* clark变换,
-            输入三相电流值 ia、ib、ic，计算出 I_alpha、I_beta*/
-            clark_temp = clark_tansform(
-                get_vfoc_ia_current(),
-                get_vfoc_ib_current(),
-                get_vfoc_ic_current()
-            );
-
-
-/*
-如何确定切换的门限参数？
-你手里有 VOFA+ 这个利器，调试这几个参数非常简单：
-
-先死循环在 FOC_STATE_OPEN_LOOP（不让它切到闭环），给电机发送一个固定的开环电流（如 Iq_ref = 1.0A）和缓慢增加的开环转速 open_loop_we。
-
-在 VOFA+ 里同时打印三个变量：open_loop_we (开环转速)、Emag (反电动势幅值)、传感器电角度。
-
-观察波形：当 open_loop_we 加速到多少时，Emag 的波形变得干净且稳定，不再有剧烈的低频波动。
-
-记下此时的 open_loop_we（比如 150 rad/s）和 Emag（比如 0.8），这就是你的最佳切入点。将这两个值填入 if (open_loop_we > 150.0f && Emag > 0.8f)。
-
-通过这种预充 PLL 积分器的方法，切换的瞬间 PLL 的初始条件与当前电机的物理状态完全一致，误差 error 接近于 0，你就能看到转速波形没有任何抖动，瞬间稳稳贴合在第二张图的状态。
-
-
-*/
-            switch (foc_state)
+        switch (foc_state)
+        {
+            case FOC_STATE_ALIGN:
             {
-                case FOC_STATE_ALIGN:
+                // 1. 预定位阶段：给一个固定的角度和一定的 D 轴电流，把转子吸过去
+                foc_lop_out.Ud = +4.5f;
+                foc_lop_out.Uq = 0.0f;
+                static uint32_t time_cnt_50us = 0;
+                
+                time_cnt_50us++;
+                // 延时一段时间（如 0.5秒）后，进入开环阶段
+                if ((time_cnt_50us) > (1000)) 
                 {
-
-                    // 1. 预定位阶段：给一个固定的角度和一定的 D 轴电流，把转子吸过去
-                    control_theta = 0.0f;
-                    Id_ref = target_iq_start; // 用 D 轴电流把转子吸到 0 度位置
-                    Iq_ref = 0.0f;
-                    
-                    // 延时一段时间（如 0.5秒）后，进入开环阶段
-                    if (align_timer > 0.5f) {
-                        foc_state = FOC_STATE_OPEN_LOOP;
-                    }
-                    
-                    break;
-                }
-
-                case FOC_STATE_OPEN_LOOP:
-                {
-
-                    // 2. 开环拖动阶段：不管传感器，强行生成不断加速的角度
-                    open_loop_we += (open_loop_accel * TS); // 转速爬升
-                    open_loop_theta += (open_loop_we * TS); // 角度积分
-                    
-                    // 角度归一化
-                    while (open_loop_theta >= FOC_2PI) open_loop_theta -= FOC_2PI;
-                    while (open_loop_theta < 0.0f)     open_loop_theta += FOC_2PI;
-
-                    control_theta = open_loop_theta;
-                    
-                    Id_ref = 0.0f;
-                    Iq_ref = target_iq_start; // 维持一个足以拖动负载的 Q 轴电流
-
-                    // 【关键】后台运行 SMO 计算反电动势 Ealpha/Ebeta，但暂时不用它的角度
-                    SMO_Update(...);
-                    
-                    // 计算反电动势幅值
-                    float Emag = sqrtf((smo.Ealpha * smo.Ealpha) + (smo.Ebeta * smo.Ebeta));
-
-                    // 检查切入条件：转速达到门限 AND 反电动势建立
-                    // (例如设定转速门限为 100 rad/s，Emag 门限用 VOFA 观察开环时达到多少比较稳定)
-                    if (open_loop_we > 100.0f && Emag > 0.5f) 
-                    {
-                        // ！！！瞬间无缝切换的核心操作 ！！！
-                        pll.theta_e = open_loop_theta;   // 1. 把当前的开环角度直接塞给 PLL
-                        pll.we = open_loop_we;           // 2. 把当前的开环转速直接塞给 PLL
-                        pll.ki_integral = open_loop_we;  // 3. 预充积分器，这步决定了不需要 10 秒去追赶！
-                        
-                        foc_state = FOC_STATE_CLOSED_LOOP; // 切换到闭环
-                    }
+                    foc_state = FOC_STATE_OPEN_LOOP;
                 }
                 
-                case FOC_STATE_CLOSED_LOOP:
-                {
-                    // 3. 闭环无感阶段：完全由 SMO 和 PLL 接管
-                    SMO_Update(...);
-                    PLL_Update(&pll, smo.Ealpha, smo.Ebeta); // 别忘了上个回答里说的取反和相位补偿
-                    
-                    control_theta = pll.theta_e; // + phase_compensation (如果加了补偿)
-                    
-                    Id_ref = 0.0f;
-                    Iq_ref = target_iq_run; // 正常运行的给定电流或速度环输出
-                    break;
-                }
-
-                default:
                 break;
             }
 
-            // ================= 下游控制 =================
-            // 拿 control_theta 去做 Park 变换
-            park_transform(Ialpha, Ibeta, control_theta, &Id, &Iq);
-
-            // PID 计算 Vd, Vq...
-            // InvPark 变换 (使用 control_theta)...
-            // SVPWM 输出...
-
-            // if ( (smo_theta_e<=FOC_2PI ) && (!sensor_les_flag))
-            // {
-            //     smo_theta_e += 0.01f;
-            //     // ESP_LOGE(
-            //     //     TAG,
-            //     //     "foc_open_lop!,%.4f\r\n",
-            //     //     smo_theta_e
-            //     // );
-                
-            // }else
+            case FOC_STATE_OPEN_LOOP:
             {
+                float target_rpm = 350.0f;
+                float theta_m = 0.0f;
+                float w_e = 0.0f;
+                float W_m = 0.0f;  // 机械角速度 rad/s
 
-                sensor_les_flag = 1;
-                // ESP_LOGE(
-                //     TAG,
-                //     "foc_nosensor!,%.4f\r\n",
-                //     smo_theta_e
-                // );
+                // 1. RPM 转 机械角速度 ωₘ (弧度/秒)
+                // RPM = 每分钟转 RPM 圈
+                // 1 圈 = 2π 弧度
+                // 每分钟总弧度=RPM×2π
+                // 每秒钟总弧度=(RPM×2π)/60
+                // 公式：ωₘ = RPM × 2π / 60 ,一秒转过多少弧度
+                W_m = target_rpm * FOC_2PI / 60.0f;
 
+                // 3. 累积机械角度（对机械速度积分算出机械角度）：角度 = 角度 + 角速度 × 时间
+                // 这就是“开环旋转”的本质
+                theta_m += W_m * M0_PWM_TASK_T;
+
+                /*计算出电角度 = 机械角度*电机磁极对数 */
+                open_lop_theta_e = theta_m * MOTOR_POLR;
+                
+                /*电角度归一化 0 ~ 2π*/
+                while (open_lop_theta_e >= FOC_2PI)
+                {
+                    open_lop_theta_e -= FOC_2PI;
+                }
+                // 角度为负数，就加上一圈
+                while (open_lop_theta_e < 0.0f)
+                {
+                    open_lop_theta_e += FOC_2PI;
+                }
+
+                set_vfoc_theta_e_rad(open_lop_theta_e);
+
+                // 【关键】后台运行 SMO 计算反电动势 Ealpha/Ebeta，但暂时不用它的角度
+                smo_theta_e = SMO_Update(
+                    &vfoc_m0_dt.smo_val,
+                    l_temp_clark_v.I_alpha,
+                    l_temp_clark_v.I_beta,
+                    clark_temp.I_alpha,
+                    clark_temp.I_beta
+                );
+
+                w_e = vfoc_calc_we(&vfoc_we_calc_v,smo_theta_e);
+                
+                // 计算反电动势幅值
+                float Emag = sqrtf((vfoc_m0_dt.smo_val.ebmf_alpha * vfoc_m0_dt.smo_val.ebmf_alpha) +
+                                    (vfoc_m0_dt.smo_val.ebmf_beta * vfoc_m0_dt.smo_val.ebmf_beta)
+                );
+
+                // 检查切入条件：转速达到门限 AND 反电动势建立
+                // (例如设定转速门限为 100 rad/s，Emag 门限用 VOFA 观察开环时达到多少比较稳定)
+                if (w_e > 100.0f && Emag > 0.5f) 
+                {
+                    // ！！！瞬间无缝切换的核心操作 ！！！
+                    vfoc_m0_dt.pll_val.theta_e = smo_theta_e;   // 1. 把当前的开环角度直接塞给 PLL
+                    vfoc_m0_dt.pll_val.we = w_e;           // 2. 把当前的开环转速直接塞给 PLL
+                    vfoc_m0_dt.pll_val.ki_integral = w_e;  // 3. 预充积分器，这步决定了不需要 10 秒去追赶！
+                    
+                    foc_state = FOC_STATE_CLOSED_LOOP; // 切换到闭环
+                }
+            }
+            
+            case FOC_STATE_CLOSED_LOOP:
+            {
+                // 3. 闭环无感阶段：完全由 SMO 和 PLL 接管
                 smo_theta_e = SMO_Update(
                     &vfoc_m0_dt.smo_val,
                     l_temp_clark_v.I_alpha,
@@ -1054,46 +1020,47 @@ void foc_task(void *arg)
                     vfoc_m0_dt.smo_val.ebmf_beta
                 );
 
+                set_vfoc_theta_e_rad(smo_pll_theta_e);
+                break;
             }
-            
-            // set_vfoc_theta_e_rad(smo_theta_e);
-            // sensor_theta_e = smo_theta_e;/*更新电角度值*/
-        // #else
-            /*接收机械角度数据*/
-            if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
-            {
-                ESP_LOGW(
-                    TAG,
-                    "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
-                    uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
-                    uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
-                );
-            }
-            sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
 
-            #if 1
-                static uint32_t log_cnt = 0;
-                if ( (log_cnt++)>10 ) 
-                {
-                    
-                    ESP_LOGI(
-                        TAG,
-                        "e: %.3f,%.3f,%.3f,%.3f \r\n",
-                        sensor_theta_e,
-                        smo_theta_e,
-                        // (sensor_theta_e-smo_theta_e)
-                        smo_pll_theta_e,
-                        vfoc_m0_dt.pll_val.Ed
+            default:
+                break;
+        }
 
-                    );
-    
-                    log_cnt = 0;
-                }
-            #endif
-
-        // #endif
-
+        /*接收机械角度数据*/
+        if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
+        {
+            ESP_LOGW(
+                TAG,
+                "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+                uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+                uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
+            );
+        }
         
+        sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
+
+        #if 1
+            static uint32_t log_cnt = 0;
+            if ( (log_cnt++)>10 ) 
+            {
+                
+                ESP_LOGI(
+                    TAG,
+                    "e: %.3f,%.3f,%.3f,%.3f \r\n",
+                    sensor_theta_e,
+                    smo_theta_e,
+                    // (sensor_theta_e-smo_theta_e)
+                    smo_pll_theta_e,
+                    vfoc_m0_dt.pll_val.Ed
+
+                );
+
+                log_cnt = 0;
+            }
+        #endif
+
         #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
             /* park变换
             * 输入两相静止坐标系电流 I_alpha、I_beta，
