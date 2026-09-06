@@ -879,7 +879,7 @@ void foc_task(void *arg)
     float m0_mch_rpm = 0.0f;
     float m0_mch_postion_deg = 0.0f;
 
-    foc_state_t foc_state = FOC_STATE_ALIGN;
+    foc_state_t foc_work_state = FOC_STATE_ALIGN;
 
     while (1)
     {
@@ -920,59 +920,101 @@ void foc_task(void *arg)
             get_vfoc_ic_current()
         );
 
-        switch (foc_state)
+        switch (foc_work_state)
         {
             case FOC_STATE_ALIGN:
             {
-                // 1. 预定位阶段：给一个固定的角度和一定的 D 轴电流，把转子吸过去
-                foc_lop_out.Ud = +4.5f;
-                foc_lop_out.Uq = 0.0f;
                 static uint32_t time_cnt_50us = 0;
+
+                // 1. 预定位阶段：给一个固定的角度和一定的 D 轴电流，把转子吸过去
+                set_vfoc_theta_e_rad(0.0f);
+                foc_lop_out.Uq = 0.0f;
+                foc_lop_out.Ud = +1.5f;
                 
                 time_cnt_50us++;
                 // 延时一段时间（如 0.5秒）后，进入开环阶段
-                if ((time_cnt_50us) > (1000)) 
+                if ((time_cnt_50us) > (1000)) // 约500ms（20KHz下）
                 {
-                    foc_state = FOC_STATE_OPEN_LOOP;
+                    foc_work_state = FOC_STATE_OPEN_LOOP;
                 }
+
+                #if 1
+                    static uint32_t log_cnt = 0;
+                    if ( (log_cnt++)>10 ) 
+                    {
+                        
+                        ESP_LOGI(
+                            TAG,
+                            "align: %.3f,%.3f, %.3f,%.3f,%.3f \r\n",
+                            get_vfoc_theta_e_rad(),
+                            sensor_theta_e,
+        
+                            smo_theta_e,
+                            // (sensor_theta_e-smo_theta_e)
+                            smo_pll_theta_e,
+                            vfoc_m0_dt.pll_val.Ed
+        
+                        );
+        
+                        log_cnt = 0;
+                    }
+                #endif
                 
                 break;
             }
 
             case FOC_STATE_OPEN_LOOP:
             {
-                float target_rpm = 350.0f;
-                float theta_m = 0.0f;
+                // 1. 定义为 static 静态变量！保证每次进任务都能记住上一次的值，持续累加
+                static float current_rpm = 10.0f;       // 当前速度 (从0开始加速)
+
                 float w_e = 0.0f;
                 float W_m = 0.0f;  // 机械角速度 rad/s
-
-                // 1. RPM 转 机械角速度 ωₘ (弧度/秒)
-                // RPM = 每分钟转 RPM 圈
-                // 1 圈 = 2π 弧度
-                // 每分钟总弧度=RPM×2π
-                // 每秒钟总弧度=(RPM×2π)/60
-                // 公式：ωₘ = RPM × 2π / 60 ,一秒转过多少弧度
-                W_m = target_rpm * FOC_2PI / 60.0f;
-
-                // 3. 累积机械角度（对机械速度积分算出机械角度）：角度 = 角度 + 角速度 × 时间
-                // 这就是“开环旋转”的本质
-                theta_m += W_m * M0_PWM_TASK_T;
-
-                /*计算出电角度 = 机械角度*电机磁极对数 */
-                open_lop_theta_e = theta_m * MOTOR_POLR;
                 
-                /*电角度归一化 0 ~ 2π*/
+                // 2. 设定斜坡加速参数（根据你的电机和负载调整）
+                const float TARGET_RPM = 250.0f; // 最终要达到的目标转速
+                const float ACCEL_RATE = 50.0f; // 加速度 (每秒增加 400 RPM)
+                
+                // 3. 斜坡加速逻辑 (Ramp Up)
+                if (current_rpm < TARGET_RPM) 
+                {
+                    current_rpm += ACCEL_RATE * M0_PWM_TASK_T_S; // 匀加速
+                }
+                else 
+                {
+                    current_rpm = TARGET_RPM; // 限制在目标速度
+                }
+
+                // 4. RPM 转 机械角速度 ωₘ，再转 电角速度 ωₑ
+                W_m = current_rpm * FOC_2PI / 60.0f;
+                w_e = W_m * MOTOR_POLR; // 电角速度 = 机械角速度 * 极对数
+
+                // 5. 累积电角度（对电角速度直接积分，更安全，防浮点溢出）
+                open_lop_theta_e += w_e * M0_PWM_TASK_T_S;
+                
+                // 6. 电角度归一化 0 ~ 2π
                 while (open_lop_theta_e >= FOC_2PI)
                 {
                     open_lop_theta_e -= FOC_2PI;
                 }
-                // 角度为负数，就加上一圈
                 while (open_lop_theta_e < 0.0f)
                 {
                     open_lop_theta_e += FOC_2PI;
                 }
 
                 set_vfoc_theta_e_rad(open_lop_theta_e);
+
+                // ★★★ 开环V/f：低速时电压也要低，高速时电压升高 ★★★
+                // 你原来固定3V，低速时电压太高会导致电流大、发热、抖动
+                // 简单的V/f曲线：转速越高，电压越高（线性比例）
+                // 但要给一个最低电压保证能起转
+                float vf_ratio = current_rpm / TARGET_RPM;  // 0~1
+                foc_lop_out.Uq = 1.0f + vf_ratio * 2.0f;    // 1.0V → 3.0V 线性增加
+                foc_lop_out.Ud = 0.0f;
+                
+                // 7. 强拖电压不要给太大！避免过流和剧烈发热，能拖动即可
+                foc_lop_out.Uq = +3.0f;  // 如果1.0V拖不动，再慢慢加大（比如1.5f, 2.0f）
+                foc_lop_out.Ud = 0.0f;
 
                 // 【关键】后台运行 SMO 计算反电动势 Ealpha/Ebeta，但暂时不用它的角度
                 smo_theta_e = SMO_Update(
@@ -990,17 +1032,40 @@ void foc_task(void *arg)
                                     (vfoc_m0_dt.smo_val.ebmf_beta * vfoc_m0_dt.smo_val.ebmf_beta)
                 );
 
-                // 检查切入条件：转速达到门限 AND 反电动势建立
-                // (例如设定转速门限为 100 rad/s，Emag 门限用 VOFA 观察开环时达到多少比较稳定)
-                if (w_e > 100.0f && Emag > 0.5f) 
+                // 切入条件（你原来的门限 w_e>100 可能太高了）
+                // 250RPM、7极对数时 w_e = 250*2π/60*7 ≈ 183 rad/s
+                // 建议门限降到目标转速的60%左右
+                if (w_e > 80.0f && Emag > 0.3f && current_rpm > 100.0f)
                 {
-                    // ！！！瞬间无缝切换的核心操作 ！！！
-                    vfoc_m0_dt.pll_val.theta_e = smo_theta_e;   // 1. 把当前的开环角度直接塞给 PLL
-                    vfoc_m0_dt.pll_val.we = w_e;           // 2. 把当前的开环转速直接塞给 PLL
-                    vfoc_m0_dt.pll_val.ki_integral = w_e;  // 3. 预充积分器，这步决定了不需要 10 秒去追赶！
-                    
-                    foc_state = FOC_STATE_CLOSED_LOOP; // 切换到闭环
+                    vfoc_m0_dt.pll_val.theta_e = smo_theta_e;
+                    vfoc_m0_dt.pll_val.we = w_e;
+                    vfoc_m0_dt.pll_val.ki_integral = w_e;
+                    // foc_work_state = FOC_STATE_CLOSED_LOOP;  // ★ 打开这行！
                 }
+
+                #if 1
+                    static uint32_t log_cnt = 0;
+                    if ( (log_cnt++)>1000 ) 
+                    {
+                        
+                        ESP_LOGI(
+                            TAG,
+                            "open_lop: %.3f,%.3f, %.3f,%.3f,%.3f \r\n",
+                            get_vfoc_theta_e_rad(),
+                            sensor_theta_e,
+        
+                            smo_theta_e,
+                            // (sensor_theta_e-smo_theta_e)
+                            smo_pll_theta_e,
+                            vfoc_m0_dt.pll_val.Ed
+        
+                        );
+        
+                        log_cnt = 0;
+                    }
+                #endif
+
+                break;
             }
             
             case FOC_STATE_CLOSED_LOOP:
@@ -1020,159 +1085,160 @@ void foc_task(void *arg)
                     vfoc_m0_dt.smo_val.ebmf_beta
                 );
 
-                set_vfoc_theta_e_rad(smo_pll_theta_e);
+                set_vfoc_theta_e_rad(smo_pll_theta_e);/*更新电角度值*/
+                
+                /*接收机械角度数据*/
+                if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
+                {
+                    ESP_LOGW(
+                        TAG,
+                        "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+                        uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+                        uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
+                    );
+                }
+                
+                sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
+        
+                #if 1
+                    static uint32_t log_cnt = 0;
+                    if ( (log_cnt++)>10 ) 
+                    {
+                        
+                        ESP_LOGI(
+                            TAG,
+                            "close_lop: %.3f,%.3f, %.3f,%.3f,%.3f \r\n",
+                            get_vfoc_theta_e_rad(),
+                            sensor_theta_e,
+        
+                            smo_theta_e,
+                            // (sensor_theta_e-smo_theta_e)
+                            smo_pll_theta_e,
+                            vfoc_m0_dt.pll_val.Ed
+        
+                        );
+        
+                        log_cnt = 0;
+                    }
+                #endif
+        
+                #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
+                    /* park变换
+                    * 输入两相静止坐标系电流 I_alpha、I_beta，
+                    * 结合当前电角度 theta_e_rad，
+                    * 计算旋转坐标系下的 Id、Iq。
+                    * */
+                    park_temp = park_tansform(
+                        clark_temp.I_alpha,
+                        clark_temp.I_beta,
+                        sensor_theta_e
+                    );
+                #endif
+        
+                // if ( 0 )
+                if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
+                {/*已经进行了电角度零点对齐*/
+        
+                    static uint32_t run_cnt;
+                    if ((run_cnt++)>=(20*100*1))
+                    {
+                        run_cnt = 0;
+                        motor_exp_rpm+=1.0f;
+                        if (motor_exp_rpm>=(650.0f))
+                        {
+                            motor_exp_rpm=1.0f;
+                        }
+                        
+                    }
+                    
+                    switch ((++freq_1KHZ_cnt))
+                    {
+                        case 20:{/* 20KHZ/2= 10KHZ*/
+        
+                            #if (VFOC_CURENT_LOOP_EN == 1)
+        
+                            #else
+                                #if 1
+                                    /*接收机械转速*/
+                                    if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 5)!= pdPASS )
+                                    {
+                                        ESP_LOGW(
+                                            TAG,
+                                            "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
+                                            uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
+                                            uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
+                                        );
+                                    }
+                                    motor_exp_rpm=400.0f;
+                                    foc_lop_out = vfoc_speed_loop(motor_exp_rpm,m0_mch_rpm);
+                                #endif
+                            #endif
+                            freq_1KHZ_cnt = 0;
+                            break;
+                        }
+                            
+                        default:{
+                            break;
+                        }
+                    }
+        
+                    switch ((++freq_200HZ_cnt))
+                    {
+                        case 100:{/* 20KHZ/100= 200HZ*/
+        
+                            #if 0
+                                /*接收机械角度数据*/
+                                if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
+                                {
+                                    ESP_LOGW(
+                                        TAG,
+                                        "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+                                        uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+                                        uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
+                                    );
+                                }
+                                motor_exp_pos_deg =150.0f;
+                                foc_lop_out = vfoc_postion_loop(motor_exp_pos_deg, m0_mch_postion_deg);
+                            #endif
+                            freq_200HZ_cnt = 0;
+                            break;
+                        }
+                            
+                        default:{
+                            break;
+                        }
+                    }
+        
+                    #if (VFOC_CURENT_LOOP_EN == 1)/*20KHZ运行*/
+                        iq_ref = 0.3f;
+                        // foc_lop_out.Uq = 3.0f;
+                        // foc_lop_out.Ud = 0.0f;
+                        foc_lop_out = vfoc_curent_loop(
+                            iq_ref,
+                            0.0f,
+                            park_temp.iq,
+                            park_temp.id
+                        );
+                    #else
+                        void;
+                    #endif
+                    
+                
+                }else{/*未进行电角度零点对齐*/
+        
+                    ESP_LOGW(
+                        TAG,
+                        "zero_theta_e_calib_failed! (%d)\r\n",
+                        balance_vehicle_car.m0_zero_theta_e_calib_flag
+                    );
+        
+                }
+
                 break;
             }
 
             default:
                 break;
-        }
-
-        /*接收机械角度数据*/
-        if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
-        {
-            ESP_LOGW(
-                TAG,
-                "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
-                uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
-                uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
-            );
-        }
-        
-        sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
-
-        #if 1
-            static uint32_t log_cnt = 0;
-            if ( (log_cnt++)>10 ) 
-            {
-                
-                ESP_LOGI(
-                    TAG,
-                    "e: %.3f,%.3f,%.3f,%.3f \r\n",
-                    sensor_theta_e,
-                    smo_theta_e,
-                    // (sensor_theta_e-smo_theta_e)
-                    smo_pll_theta_e,
-                    vfoc_m0_dt.pll_val.Ed
-
-                );
-
-                log_cnt = 0;
-            }
-        #endif
-
-        #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
-            /* park变换
-            * 输入两相静止坐标系电流 I_alpha、I_beta，
-            * 结合当前电角度 theta_e_rad，
-            * 计算旋转坐标系下的 Id、Iq。
-            * */
-            park_temp = park_tansform(
-                clark_temp.I_alpha,
-                clark_temp.I_beta,
-                sensor_theta_e
-            );
-        #endif
-
-        // if ( 0 )
-        if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
-        {/*已经进行了电角度零点对齐*/
-
-            static uint32_t run_cnt;
-            if ((run_cnt++)>=(20*100*1))
-            {
-                run_cnt = 0;
-                motor_exp_rpm+=1.0f;
-                if (motor_exp_rpm>=(650.0f))
-                {
-                    motor_exp_rpm=1.0f;
-                }
-                
-            }
-            
-            switch ((++freq_1KHZ_cnt))
-            {
-                case 20:{/* 20KHZ/2= 10KHZ*/
-
-                    #if (VFOC_CURENT_LOOP_EN == 1)
-
-                    #else
-                        #if 1
-                            /*接收机械转速*/
-                            if ( xQueueReceive(g_motor0_mech_rpm_queue, &m0_mch_rpm, 5)!= pdPASS )
-                            {
-                                ESP_LOGW(
-                                    TAG,
-                                    "g_motor0_mech_rpm_queue recive failed! ,remi:%d,use:%d\r\n",
-                                    uxQueueSpacesAvailable(g_motor0_mech_rpm_queue),
-                                    uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
-                                );
-                            }
-                            motor_exp_rpm=400.0f;
-                            foc_lop_out = vfoc_speed_loop(motor_exp_rpm,m0_mch_rpm);
-                        #endif
-                    #endif
-                    freq_1KHZ_cnt = 0;
-                    break;
-                }
-                    
-                default:{
-                    break;
-                }
-            }
-
-
-
-            switch ((++freq_200HZ_cnt))
-            {
-                case 100:{/* 20KHZ/100= 200HZ*/
-
-                    #if 0
-                        /*接收机械角度数据*/
-                        if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
-                        {
-                            ESP_LOGW(
-                                TAG,
-                                "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
-                                uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
-                                uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
-                            );
-                        }
-                        motor_exp_pos_deg =150.0f;
-                        foc_lop_out = vfoc_postion_loop(motor_exp_pos_deg, m0_mch_postion_deg);
-                    #endif
-                    freq_200HZ_cnt = 0;
-                    break;
-                }
-                    
-                default:{
-                    break;
-                }
-            }
-
-            #if (VFOC_CURENT_LOOP_EN == 1)/*20KHZ运行*/
-                iq_ref = 0.3f;
-                // foc_lop_out.Uq = 3.0f;
-                // foc_lop_out.Ud = 0.0f;
-                foc_lop_out = vfoc_curent_loop(
-                    iq_ref,
-                    0.0f,
-                    park_temp.iq,
-                    park_temp.id
-                );
-            #else
-                void;
-            #endif
-            
-        
-        }else{/*未进行电角度零点对齐*/
-
-            ESP_LOGW(
-                TAG,
-                "zero_theta_e_calib_failed! (%d)\r\n",
-                balance_vehicle_car.m0_zero_theta_e_calib_flag
-            );
-
         }
 
         #ifdef USE_FOC_SPWM
@@ -1420,13 +1486,13 @@ void foc_task(void *arg)
                 foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].end_t - 
                 foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].strat_t;/*角度值时间戳us*/
 
-            if ( foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt > (M0_PWM_TASK_T) )
+            if ( foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt > (M0_PWM_TASK_T_US) )
             {
                 ESP_LOGW(
                     TAG,
                     "foc_over_time(%.4f):%lldus,index:%lld\r\n",
                     // "(%.1f)%lldus,%lld\r\n",
-                    (float)(M0_PWM_TASK_T),
+                    (float)(M0_PWM_TASK_T_US),
                     foc_time_stamp.time[(foc_time_stamp.index)%TIME_STAMP_SIZE].dt,
                     foc_time_stamp.index
                 );

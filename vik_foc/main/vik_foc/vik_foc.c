@@ -49,7 +49,7 @@ vfoc_we_calc_t vfoc_we_calc_v = {
     .last_theta_e = 0.0f,
     .last_we = 0.0f,
     .lpf_alpha = 0.05f,   // 滤波系数需要根据你的 dt 和系统噪声去调，通常 0.01~0.1 比较合适
-    .dt = M0_PWM_TASK_T         // 假设你的 FOC_TASK 是 10kHz 运行
+    .dt = M0_PWM_TASK_T_US         // 假设你的 FOC_TASK 是 10kHz 运行
 };
 
 
