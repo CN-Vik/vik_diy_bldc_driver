@@ -18,7 +18,7 @@
     平衡车建议(10~20KHZ)
  * 新手先设置10kHz PWM 载波。
  */
-#define M0_PWM_FREQ_HZ                    (20 *(1000))
+#define M0_PWM_FREQ_HZ                    (10 *(1000))
 #define M0_PWM_TASK_T_US                  ((1.0f/M0_PWM_FREQ_HZ)*(1000000.0f))
 #define M0_PWM_TASK_T_S                   ((1.0f/M0_PWM_FREQ_HZ))
 

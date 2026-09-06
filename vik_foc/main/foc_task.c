@@ -927,13 +927,13 @@ void foc_task(void *arg)
                 static uint32_t time_cnt_50us = 0;
 
                 // 1. 预定位阶段：给一个固定的角度和一定的 D 轴电流，把转子吸过去
-                set_vfoc_theta_e_rad(0.0f);
-                foc_lop_out.Uq = 0.0f;
-                foc_lop_out.Ud = +1.5f;
+                set_vfoc_theta_e_rad(-FOC_PI/2.0f);
+                foc_lop_out.Uq = 1.5f;
+                foc_lop_out.Ud = 0.0f;
                 
                 time_cnt_50us++;
                 // 延时一段时间（如 0.5秒）后，进入开环阶段
-                if ((time_cnt_50us) > (1000)) // 约500ms（20KHz下）
+                if ((time_cnt_50us) > (2000)) // 约500ms（20KHz下）
                 {
                     foc_work_state = FOC_STATE_OPEN_LOOP;
                 }
@@ -965,34 +965,31 @@ void foc_task(void *arg)
 
             case FOC_STATE_OPEN_LOOP:
             {
-                // 1. 定义为 static 静态变量！保证每次进任务都能记住上一次的值，持续累加
-                static float current_rpm = 10.0f;       // 当前速度 (从0开始加速)
+                // 1. 速度从 0 开始平滑爬坡
+                static float current_rpm = 0.0f;
 
-                float w_e = 0.0f;
-                float W_m = 0.0f;  // 机械角速度 rad/s
+                const float START_RPM  = 0.0f;
+                const float TARGET_RPM = 350.0f; 
+                const float ACCEL_RATE = 150.0f; // 加速度 (每秒增加 150 RPM)
                 
-                // 2. 设定斜坡加速参数（根据你的电机和负载调整）
-                const float TARGET_RPM = 250.0f; // 最终要达到的目标转速
-                const float ACCEL_RATE = 50.0f; // 加速度 (每秒增加 400 RPM)
-                
-                // 3. 斜坡加速逻辑 (Ramp Up)
+                // 2. 斜坡加速逻辑 (Ramp Up)
                 if (current_rpm < TARGET_RPM) 
                 {
-                    current_rpm += ACCEL_RATE * M0_PWM_TASK_T_S; // 匀加速
+                    current_rpm += ACCEL_RATE * M0_PWM_TASK_T_S;
                 }
                 else 
                 {
-                    current_rpm = TARGET_RPM; // 限制在目标速度
+                    current_rpm = TARGET_RPM;
                 }
 
-                // 4. RPM 转 机械角速度 ωₘ，再转 电角速度 ωₑ
-                W_m = current_rpm * FOC_2PI / 60.0f;
-                w_e = W_m * MOTOR_POLR; // 电角速度 = 机械角速度 * 极对数
+                // 3. RPM 转电角速度 we
+                float W_m = current_rpm * FOC_2PI / 60.0f;
+                float w_e = W_m * MOTOR_POLR;
 
-                // 5. 累积电角度（对电角速度直接积分，更安全，防浮点溢出）
+                // 4. 累加电角度 (从 -PI/2 连续往上累加，零相位突变！)
                 open_lop_theta_e += w_e * M0_PWM_TASK_T_S;
                 
-                // 6. 电角度归一化 0 ~ 2π
+                // 5. 归一化到 [0, 2π)
                 while (open_lop_theta_e >= FOC_2PI)
                 {
                     open_lop_theta_e -= FOC_2PI;
@@ -1004,19 +1001,19 @@ void foc_task(void *arg)
 
                 set_vfoc_theta_e_rad(open_lop_theta_e);
 
-                // ★★★ 开环V/f：低速时电压也要低，高速时电压升高 ★★★
-                // 你原来固定3V，低速时电压太高会导致电流大、发热、抖动
-                // 简单的V/f曲线：转速越高，电压越高（线性比例）
-                // 但要给一个最低电压保证能起转
-                float vf_ratio = current_rpm / TARGET_RPM;  // 0~1
-                foc_lop_out.Uq = 1.0f + vf_ratio * 2.0f;    // 1.0V → 3.0V 线性增加
-                foc_lop_out.Ud = 0.0f;
+                // 6. ★★★ 真正的线性 V/F 曲线 ★★★
+                // 起步基底电压 U_min (克服电阻压降)，高速拉到 U_max (对抗反电动势)
+                // 如果空载起步转不动，微调 1.0f 到 1.3f；如果发烫严重，调低到 0.8f
+                const float U_MIN = 1.0f; 
+                const float U_MAX = 2.5f; 
                 
-                // 7. 强拖电压不要给太大！避免过流和剧烈发热，能拖动即可
-                foc_lop_out.Uq = +3.0f;  // 如果1.0V拖不动，再慢慢加大（比如1.5f, 2.0f）
-                foc_lop_out.Ud = 0.0f;
+                float vf_ratio = current_rpm / TARGET_RPM;
+                if (vf_ratio > 1.0f) vf_ratio = 1.0f;
 
-                // 【关键】后台运行 SMO 计算反电动势 Ealpha/Ebeta，但暂时不用它的角度
+                foc_lop_out.Ud = 0.0f;
+                foc_lop_out.Uq = U_MIN + vf_ratio * (U_MAX - U_MIN); // 彻底删除原代码中强行写死 3.0f 的行！
+
+                // 7. 后台运行 SMO 观测器
                 smo_theta_e = SMO_Update(
                     &vfoc_m0_dt.smo_val,
                     l_temp_clark_v.I_alpha,
@@ -1025,23 +1022,25 @@ void foc_task(void *arg)
                     clark_temp.I_beta
                 );
 
-                w_e = vfoc_calc_we(&vfoc_we_calc_v,smo_theta_e);
+                w_e = vfoc_calc_we(&vfoc_we_calc_v, smo_theta_e);
                 
                 // 计算反电动势幅值
                 float Emag = sqrtf((vfoc_m0_dt.smo_val.ebmf_alpha * vfoc_m0_dt.smo_val.ebmf_alpha) +
-                                    (vfoc_m0_dt.smo_val.ebmf_beta * vfoc_m0_dt.smo_val.ebmf_beta)
-                );
+                                   (vfoc_m0_dt.smo_val.ebmf_beta * vfoc_m0_dt.smo_val.ebmf_beta));
 
-                // 切入条件（你原来的门限 w_e>100 可能太高了）
-                // 250RPM、7极对数时 w_e = 250*2π/60*7 ≈ 183 rad/s
-                // 建议门限降到目标转速的60%左右
-                if (w_e > 80.0f && Emag > 0.3f && current_rpm > 100.0f)
+                // 8. 切闭环判断条件
+                if (w_e > 80.0f && Emag > 0.3f && current_rpm > 120.0f)
                 {
                     vfoc_m0_dt.pll_val.theta_e = smo_theta_e;
                     vfoc_m0_dt.pll_val.we = w_e;
                     vfoc_m0_dt.pll_val.ki_integral = w_e;
-                    // foc_work_state = FOC_STATE_CLOSED_LOOP;  // ★ 打开这行！
+                    
+                    // 需要复位 open loop 内部静态变量，方便下次重启
+                    current_rpm = 0.0f; 
+                    
+                    // foc_work_state = FOC_STATE_CLOSED_LOOP; // 确认开环平稳后放开
                 }
+
 
                 #if 1
                     static uint32_t log_cnt = 0;
