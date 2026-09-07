@@ -1023,20 +1023,22 @@ void foc_task(void *arg)
                 );
 
                 w_e = vfoc_calc_we(&vfoc_we_calc_v, smo_theta_e);
+                float now_mech_rpm = calc_rpm_from_we(w_e,MOTOR_POLR);
                 
                 // 计算反电动势幅值
                 float Emag = sqrtf((vfoc_m0_dt.smo_val.ebmf_alpha * vfoc_m0_dt.smo_val.ebmf_alpha) +
                                    (vfoc_m0_dt.smo_val.ebmf_beta * vfoc_m0_dt.smo_val.ebmf_beta));
 
                 // 8. 切闭环判断条件
-                if (w_e > 80.0f && Emag > 0.3f && current_rpm > 120.0f)
+                // if (now_mech_rpm > 80.0f && Emag > 0.3f && current_rpm > 120.0f)
+                if (now_mech_rpm > 80.0f)
                 {
                     vfoc_m0_dt.pll_val.theta_e = smo_theta_e;
                     vfoc_m0_dt.pll_val.we = w_e;
                     vfoc_m0_dt.pll_val.ki_integral = w_e;
                     
                     // 需要复位 open loop 内部静态变量，方便下次重启
-                    current_rpm = 0.0f; 
+                    // current_rpm = 0.0f; 
                     
                     // foc_work_state = FOC_STATE_CLOSED_LOOP; // 确认开环平稳后放开
                 }
@@ -1046,17 +1048,20 @@ void foc_task(void *arg)
                     static uint32_t log_cnt = 0;
                     if ( (log_cnt++)>1000 ) 
                     {
-                        
                         ESP_LOGI(
                             TAG,
-                            "open_lop: %.3f,%.3f, %.3f,%.3f,%.3f \r\n",
+                            // "open_lop: %.3f,%.3f,%.3f, %.3f,%.3f,%.3f \r\n",
+                            "open_lop: %.3f,%.3f,%.3f,%.3f,%.3f  \r\n",
                             get_vfoc_theta_e_rad(),
-                            sensor_theta_e,
-        
                             smo_theta_e,
-                            // (sensor_theta_e-smo_theta_e)
-                            smo_pll_theta_e,
-                            vfoc_m0_dt.pll_val.Ed
+                            w_e,
+                            now_mech_rpm,
+                            foc_lop_out.Uq
+                            
+                            // sensor_theta_e,
+                            // // (sensor_theta_e-smo_theta_e)
+                            // smo_pll_theta_e,
+                            // vfoc_m0_dt.pll_val.Ed
         
                         );
         
@@ -1084,6 +1089,9 @@ void foc_task(void *arg)
                     vfoc_m0_dt.smo_val.ebmf_beta
                 );
 
+                float w_e = vfoc_calc_we(&vfoc_we_calc_v, smo_pll_theta_e);
+                float now_mech_rpm = calc_rpm_from_we(w_e,MOTOR_POLR);
+
                 set_vfoc_theta_e_rad(smo_pll_theta_e);/*更新电角度值*/
                 
                 /*接收机械角度数据*/
@@ -1098,28 +1106,6 @@ void foc_task(void *arg)
                 }
                 
                 sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
-        
-                #if 1
-                    static uint32_t log_cnt = 0;
-                    if ( (log_cnt++)>10 ) 
-                    {
-                        
-                        ESP_LOGI(
-                            TAG,
-                            "close_lop: %.3f,%.3f, %.3f,%.3f,%.3f \r\n",
-                            get_vfoc_theta_e_rad(),
-                            sensor_theta_e,
-        
-                            smo_theta_e,
-                            // (sensor_theta_e-smo_theta_e)
-                            smo_pll_theta_e,
-                            vfoc_m0_dt.pll_val.Ed
-        
-                        );
-        
-                        log_cnt = 0;
-                    }
-                #endif
         
                 #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
                     /* park变换
@@ -1169,6 +1155,7 @@ void foc_task(void *arg)
                                         );
                                     }
                                     motor_exp_rpm=400.0f;
+                                    // m0_mch_rpm = now_mech_rpm;
                                     foc_lop_out = vfoc_speed_loop(motor_exp_rpm,m0_mch_rpm);
                                 #endif
                             #endif
@@ -1220,6 +1207,33 @@ void foc_task(void *arg)
                         );
                     #else
                         void;
+                    #endif
+
+
+                    #if 1
+                        static uint32_t log_cnt = 0;
+                        if ( (log_cnt++)>10 ) 
+                        {
+                            ESP_LOGI(
+                                TAG,
+                                "close_lop: %.3f,%.3f,%.3f,%.3f ,%.3f,%.3f \r\n",
+                                sensor_theta_e,
+                                get_vfoc_theta_e_rad(),
+                                smo_pll_theta_e,
+                                w_e,
+
+                                now_mech_rpm,
+                                m0_mch_rpm
+                                
+                                // sensor_theta_e,
+                                // // (sensor_theta_e-smo_theta_e)
+                                // smo_pll_theta_e,
+                                // vfoc_m0_dt.pll_val.Ed
+            
+                            );
+            
+                            log_cnt = 0;
+                        }
                     #endif
                     
                 

@@ -15,6 +15,7 @@
 #include "esp32_flas_nvs.h"
 #include <math.h>
 #include "motor_cfg_pwm.h"
+#include "esp_timer.h"
 
 static const char *TAG = "vik_foc";
 
@@ -48,8 +49,8 @@ foc_data_t vfoc_m0_dt={0};
 vfoc_we_calc_t vfoc_we_calc_v = {
     .last_theta_e = 0.0f,
     .last_we = 0.0f,
-    .lpf_alpha = 0.05f,   // 滤波系数需要根据你的 dt 和系统噪声去调，通常 0.01~0.1 比较合适
-    .dt = M0_PWM_TASK_T_US         // 假设你的 FOC_TASK 是 10kHz 运行
+    .lpf_alpha = 1.0f,   // 滤波系数需要根据你的 dt 和系统噪声去调，通常 0.01~0.1 比较合适
+    .dt = M0_PWM_TASK_T_S         // 假设你的 FOC_TASK 是 10kHz 运行
 };
 
 
@@ -2391,7 +2392,7 @@ float calc_rpm_from_we(float we,float pole_pair)
 {
     float n_mech_rpm;/*机械转速*/
     
-    n_mech_rpm = (we/pole_pair)*(60/(2*FOC_2PI));
+    n_mech_rpm = (we/pole_pair)*(60.0f/(2.0f*FOC_PI));
 
     return n_mech_rpm;
 
@@ -2407,6 +2408,39 @@ float calc_rpm_from_we(float we,float pole_pair)
  */
 float vfoc_calc_we(vfoc_we_calc_t *we_calc, float current_theta_e)
 {
+    if (we_calc == NULL)
+    {
+        return -1.0f;
+    }
+    static bool first_flag = true;
+    static int64_t last_time_us = 0;        /* 上一次时间戳，单位 us */
+    
+    int64_t now_time_us = esp_timer_get_time();
+
+    /*
+     * 第一次进入时没有上一次角度和时间，无法计算速度。
+     * 所以只记录当前值，返回 0。
+     */
+    if (first_flag)
+    {
+        first_flag = false;
+        last_time_us = now_time_us;
+        return 0.0f;
+    }
+
+    
+    /*
+     * 计算本次和上次的时间差，单位 us。
+     */
+    int64_t dt_us = now_time_us - last_time_us;
+
+    /*
+     * us 转成秒。
+     */
+    we_calc->dt = (float)dt_us / 1000000.0f;
+    // float dt_s = (float)dt_us / 1e6f;
+
+    
     /* 1. 差分：求出本次角度变化量 */
     float delta_theta = current_theta_e - we_calc->last_theta_e;
 
@@ -2431,13 +2465,29 @@ float vfoc_calc_we(vfoc_we_calc_t *we_calc, float current_theta_e)
      * out = alpha * new + (1 - alpha) * old;
      * 变形写成：out = old + alpha * (new - old) 以减少乘法运算
      */
-    float filter_we = we_calc->last_we + we_calc->lpf_alpha * (raw_we - we_calc->last_we);
+    // float filter_we = we_calc->last_we + we_calc->lpf_alpha * (raw_we - we_calc->last_we);
 
     /* 5. 更新历史状态，供下一次使用 */
     we_calc->last_theta_e = current_theta_e;
-    we_calc->last_we = filter_we;
+    we_calc->last_we = raw_we;
 
-    return filter_we; // 返回最终平滑的电角速度 (rad/s)
+
+    #if 0
+        static uint32_t log_cnt = 0;
+        if ( (log_cnt++)>1000 ) 
+        {
+
+            ESP_LOGI(TAG,"theta: %.3f, delta: %.4f, alpha: %.3f, dt: %.6f, raw_we: %.2f\n", 
+                current_theta_e, delta_theta, we_calc->lpf_alpha, we_calc->dt, raw_we);
+
+            log_cnt = 0;
+        }
+    #endif
+
+    last_time_us = now_time_us;
+
+
+    return raw_we; // 返回最终平滑的电角速度 (rad/s)
 }
 
 /*----------------------无感FOC--Sensor_less_FOC---------------------------*/

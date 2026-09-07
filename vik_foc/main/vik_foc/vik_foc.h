@@ -88,7 +88,7 @@ do {                                            \
 #define MOTOR_DRV_VBUS             12.0f  /* 12V */
 
 
-#define MOTOR_POLR         7 /*电机磁极对数*/
+#define MOTOR_POLR         (7.0f) /*电机磁极对数*/
 #define MOTOR_LS         (4.25f*1e-3f) /*电机相电感 4.25mH*/
 #define MOTOR_RS         (8.25f) /*电机相电阻 8.25欧姆*/
 #define SMO_TS            (1/20000.0f)
