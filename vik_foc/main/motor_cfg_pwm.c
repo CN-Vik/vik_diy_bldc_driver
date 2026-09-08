@@ -157,7 +157,7 @@ esp_err_t motor_set_pwm_duty(float duty_u, float duty_v, float duty_w)
         {
             ESP_LOGE(
                 TAG,
-                "CMP_ERROR(%d),cmp=%lu,max=%d \r\n",
+                "CMP_ERROR(%d),cmp=%lu,max=%f \r\n",
                 i,
                 cmp_uvw[i],
                 M0_PWM_MAX_CMPV
@@ -311,7 +311,7 @@ esp_err_t esp32_mcpwm_init(void)
     );
 
     ESP_LOGI(TAG,
-             "M0_MCPWM_init_done, PWM_freq=%dHz, period_ticks=%d\r\n",
+             "M0_MCPWM_init_done, PWM_freq=%fHz, period_ticks=%f\r\n",
              M0_PWM_FREQ_HZ,
              M0_PWM_PERIOD_TICKS
     );
