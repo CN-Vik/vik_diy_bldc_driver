@@ -1271,8 +1271,8 @@ static void motor_get_angle_task(void *arg)
 
         // angle_time_stamp_start = esp_timer_get_time();/*角度值时间戳us*/
 
-        // if (1)
-        if (!motor_encoder_get_angle(&angle))
+        if (1)
+        // if (!motor_encoder_get_angle(&angle))
         {
 
             /*角度值不能滤波，原本就落后于FOC PWM周期，再滤波更落后 */

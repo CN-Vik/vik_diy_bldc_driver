@@ -938,7 +938,7 @@ void foc_task(void *arg)
                     foc_work_state = FOC_STATE_OPEN_LOOP;
                 }
 
-                #if 1
+                #if 0
                     static uint32_t log_cnt = 0;
                     if ( (log_cnt++)>10 ) 
                     {
@@ -1044,7 +1044,7 @@ void foc_task(void *arg)
                 }
 
 
-                #if 1
+                #if 0
                     static uint32_t log_cnt = 0;
                     if ( (log_cnt++)>1000 ) 
                     {

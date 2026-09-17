@@ -40,6 +40,7 @@
 static const char *TAG = "vik_foc_example_main";
 
 extern void gptimer_creat_main(void);
+extern void wifi_smartcfg_main(void);
 
 
 
@@ -181,6 +182,7 @@ void app_main(void)
         ESP_LOGI(TAG, "NVS_FLASH_Erase_All_data! \r\n");
     }
     ESP_ERROR_CHECK(err);
+    wifi_smartcfg_main();
 
     /*1.rtos系统资源初始化*/
     app_rtos_resource_init();
