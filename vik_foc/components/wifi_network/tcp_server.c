@@ -23,6 +23,8 @@
 #include <lwip/netdb.h>
 
 #include "debug_protocol.h"
+#include "app_rtos_resource.h"
+#include "app_rtos_config.h"
 
 
 #define CONFIG_EXAMPLE_IPV4         1
@@ -37,7 +39,6 @@ static const char *TAG = "tcp_server_eg";
 
 TaskHandle_t tcp_server_task_handle = NULL;
 
-extern EventGroupHandle_t g_wifi_event_group;
 extern const int CONNECTED_BIT;
 
 
@@ -232,13 +233,14 @@ void tcp_server_main(void)
     // ESP_ERROR_CHECK(example_connect());
 
 #ifdef CONFIG_EXAMPLE_IPV4
-    xTaskCreate(
+    xTaskCreatePinnedToCore(
         tcp_server_task, //任务函数
         "tcp_server", //任务名称
-        4096, //栈大小（4096字 = 16KB）
+        TCP_SERVER_TASK_STACK, //栈大小（4096字 = 16KB）
         (void*)AF_INET, //传递AF_INET参数
-        15,// 优先级（0-24，数字越大优先级越高）
-        &tcp_server_task_handle
+        TCP_SERVER_TASK_PRIO,// 优先级（0-24，数字越大优先级越高）
+        &tcp_server_task_handle,
+        TCP_SERVER_TASK_CORE
     );
 #endif
 }

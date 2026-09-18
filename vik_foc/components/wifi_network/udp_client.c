@@ -22,6 +22,9 @@
 #include "lwip/sys.h"
 #include <lwip/netdb.h>
 #include "udp_logger.h"
+#include "app_rtos_config.h"
+#include "app_rtos_resource.h"
+
 
 
 #define DEST_IP_ADDR    ("192.168.1.138") /*目标IP地址*/
@@ -36,7 +39,6 @@ static const char *TAG = "udp_cleint_eg";
 static const char *udp_tx_data = "Message_from_ESP32_Vik\r\n";
 
 TaskHandle_t udp_client_task_handle = NULL;
-extern EventGroupHandle_t g_wifi_event_group;
 extern const int CONNECTED_BIT;
 
 
@@ -84,9 +86,6 @@ void udp_client_recive_data(int net_udp_sock)
 
 static void udp_client_task(void *pvParameters)
 {
-
-    // 创建队列，最多缓存 20 条日志
-    udp_log_queue = xQueueCreate(20, sizeof(char *));
 
     while (1) 
     {
@@ -209,12 +208,13 @@ static void udp_client_task(void *pvParameters)
 
 void udp_clinet_main(void)
 {
-    xTaskCreate(
+    xTaskCreatePinnedToCore(
         udp_client_task, // 任务函数
         "udp_client", // 任务名称（最多16字符）
-        4096, // 栈大小（4096字 = 16KB）
+        UDP_CLIENT_TASK_STACK, // 栈大小（4096字 = 16KB）
         NULL,
-        14, // 优先级（0-24，数字越大优先级越高）
-        &udp_client_task_handle 
+        UDP_CLIENT_TASK_PRIO, // 优先级（0-24，数字越大优先级越高）
+        &udp_client_task_handle,
+        UDP_CLIENT_TASK_CORE
     );
 }

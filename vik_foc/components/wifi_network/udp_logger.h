@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "app_rtos_resource.h"
 
 // 打印等级定义
 typedef enum {
@@ -26,9 +27,6 @@ typedef enum {
 
 // 当前全局过滤等级
 extern udp_log_level_t current_udp_log_level;
-
-// UDP 发送队列句柄
-extern QueueHandle_t udp_log_queue;
 
 #define UDP_LOG_MAX_LEN 128
 

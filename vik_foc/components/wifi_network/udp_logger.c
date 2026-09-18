@@ -11,7 +11,6 @@
 #include "udp_logger.h"
 
 udp_log_level_t current_udp_log_level = UDP_LEVEL_INFO; // 默认过滤等级
-QueueHandle_t udp_log_queue = NULL;
 
 void udp_log_print(udp_log_level_t level, const char *fmt, ...)
 {

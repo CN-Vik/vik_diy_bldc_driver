@@ -45,6 +45,10 @@ typedef enum
     /* 电机 */
     DEBUG_CMD_SPEED_REF,
     DEBUG_CMD_POS_REF,
+
+
+    DEBUG_CMD_RUN_OTA,
+
     DEBUG_CMD_MAX
 
 } debug_cmd_id_t;

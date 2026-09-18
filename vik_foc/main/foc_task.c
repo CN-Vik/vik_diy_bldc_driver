@@ -413,7 +413,7 @@ park_parm_t vfoc_speed_loop(float exp_sped_rpm, float now_sped_rpm)
     #endif
 
     
-    #if 0
+    #if 1
         static uint32_t log_cnt = 0;
         // if ( (t_index==6) && ((log_cnt++)>1000) )
         if ( (log_cnt++)>100 ) 

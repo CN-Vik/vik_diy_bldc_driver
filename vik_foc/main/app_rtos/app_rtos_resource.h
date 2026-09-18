@@ -97,6 +97,7 @@ extern SemaphoreHandle_t g_spi_mutex;
  * 2. MOS是否已经使能
  */
 extern EventGroupHandle_t g_app_event_group;
+extern EventGroupHandle_t g_wifi_event_group;
 /*----------------事件标志组---------------------*/
 
 
@@ -117,6 +118,8 @@ extern QueueHandle_t g_motor_cmd_queue;
 extern QueueHandle_t g_uart_print_queue;
 extern QueueHandle_t g_motor0_mech_rpm_queue;
 extern QueueHandle_t g_motor0_mech_deg_queue;
+// UDP 发送队列句柄
+extern QueueHandle_t udp_log_queue;
 
 /*----------------队列---------------------*/
 

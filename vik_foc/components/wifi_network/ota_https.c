@@ -19,6 +19,9 @@
 #include "esp_https_ota.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "app_rtos_resource.h"
+#include "app_rtos_config.h"
+
 
 // #if CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK
 // #include "esp_efuse.h"
@@ -42,7 +45,6 @@ extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
 extern const int CONNECTED_BIT;
 extern const int ESPTOUCH_DONE_BIT;
-extern EventGroupHandle_t g_wifi_event_group;
 TaskHandle_t ota_https_task_handle;
 
 
@@ -106,6 +108,19 @@ void ota_https_task(void *pvParameter)
      * ================================================================ */
     while (1)
     {
+        /* 平时完全死等通知，不占任何 CPU 和带宽 */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        ESP_LOGI(TAG, "Received OTA command, starting OTA process...");
+
+        /* 1. 安全检查：确认 FOC 已停机下电 */
+        // if (foc_motor_is_running()) {
+        //     ESP_LOGE(TAG, "Motor is running! Abort OTA for safety.");
+        //     continue;
+        // }
+
+        /* 2. 执行 OTA 下载流程（单次执行，不循环） */
+        
         /* ------------------------------------------------------------
          * 第 1 步：先等 WiFi 连上（最关键！begin 之前必须有网）
          * ------------------------------------------------------------ */
@@ -226,12 +241,13 @@ void ota_https_task(void *pvParameter)
 
 void ota_https_main(void)
 { 
-    xTaskCreate( 
+    xTaskCreatePinnedToCore( 
         ota_https_task, // 任务函数 
         "ota_https_task", // 任务名称（最多16字符）
-        1024 * 8, // 栈大小（4096字 = 16KB）
+        OTA_HTTPS_TASK_STACK, // 栈大小（4096字 = 16KB）
         NULL, 
-        12, // 优先级（0-24，数字越大优先级越高）
-        &ota_https_task_handle 
+        OTA_HTTPS_TASK_PRIO, // 优先级（0-24，数字越大优先级越高）
+        &ota_https_task_handle,
+        OTA_HTTPS_TASK_CORE
     );
 }

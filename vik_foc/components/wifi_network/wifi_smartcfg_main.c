@@ -21,7 +21,8 @@
 #include "nvs_flash.h"
 #include "esp_https_ota.h"
 #include "esp_ota_ops.h"  // OTA操作相关函数
-
+#include "app_rtos_config.h"
+#include "app_rtos_resource.h"
 
 /* ============================================================
  * 配置
@@ -36,7 +37,7 @@ extern TaskHandle_t udp_client_task_handle;
 extern TaskHandle_t ota_https_task_handle;
 
 
-EventGroupHandle_t g_wifi_event_group;
+
 
 const int CONNECTED_BIT      = BIT0;
 const int ESPTOUCH_DONE_BIT  = BIT1;
@@ -84,13 +85,14 @@ static void start_smartconfig(void)
     ESP_LOGW(TAG, "Please use ESPTouch APP");
     ESP_LOGW(TAG, "======================================");
 
-    BaseType_t ret = xTaskCreate(
+    BaseType_t ret = xTaskCreatePinnedToCore(
         wifi_smart_cfg_task,
         "smartconfig_task",
-        4096,
+        WIFI_SMART_CFG_TASK_STACK,
         NULL,
-        3,
-        NULL
+        WIFI_SMART_CFG_TASK_PRIO,
+        NULL,
+        WIFI_SMART_CFG_TASK_CORE
     );
 
     if (ret != pdPASS)
@@ -504,12 +506,6 @@ static void initialise_wifi(void)
     ESP_ERROR_CHECK(
         esp_netif_init()
     );
-
-
-    g_wifi_event_group = xEventGroupCreate();
-
-    assert(g_wifi_event_group);
-
 
     ESP_ERROR_CHECK(
         esp_event_loop_create_default()

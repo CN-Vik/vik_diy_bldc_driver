@@ -47,12 +47,13 @@ QueueHandle_t g_motor_cmd_queue = NULL;
 QueueHandle_t g_motor0_mech_rpm_queue = NULL;
 QueueHandle_t g_motor0_mech_deg_queue = NULL;
 QueueHandle_t g_uart_print_queue = NULL;
+QueueHandle_t udp_log_queue = NULL;
 /*------队列--------*/
 
 /*---------事件标志组-----------*/
 EventGroupHandle_t g_app_event_group = NULL;
+EventGroupHandle_t g_wifi_event_group = NULL;
 /*---------事件标志组-----------*/
-
 
 
 /**
@@ -159,6 +160,10 @@ void rtos_queue_creat(void)
         ESP_LOGE(TAG, "创建 g_motor0_mech_rpm_queue 失败");
     }
 
+    // 创建队列，最多缓存 20 条日志
+    udp_log_queue = xQueueCreate(20, sizeof(char *));
+
+
     // g_motor0_mech_deg_queue = xQueueCreate(10, sizeof(float));
     // if (g_motor0_mech_deg_queue == NULL)
     // {
@@ -205,6 +210,11 @@ void rtos_event_group_creat(void)
         g_app_event_group,
         APP_EVT_CURRENT_ZERO_DONE | APP_EVT_MOS_ENABLED
     );
+
+    
+    g_wifi_event_group = xEventGroupCreate();
+
+    assert(g_wifi_event_group);
 
 }
 

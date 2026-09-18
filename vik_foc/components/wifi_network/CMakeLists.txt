@@ -20,3 +20,6 @@ idf_component_register(
         esp_https_ota
         app_update
 )
+
+# 追加下面这一行：将 main/app_rtos 路径加入本组件的头文件查找列表
+target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../main/app_rtos")

@@ -182,7 +182,6 @@ void app_main(void)
         ESP_LOGI(TAG, "NVS_FLASH_Erase_All_data! \r\n");
     }
     ESP_ERROR_CHECK(err);
-    wifi_smartcfg_main();
 
     /*1.rtos系统资源初始化*/
     app_rtos_resource_init();
@@ -191,5 +190,6 @@ void app_main(void)
 
     gptimer_creat_main();
 
+    wifi_smartcfg_main();
 
 }

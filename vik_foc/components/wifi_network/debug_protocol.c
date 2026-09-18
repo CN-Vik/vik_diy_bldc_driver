@@ -11,6 +11,7 @@
 
 static const char *TAG = "debug_protol";
 
+extern TaskHandle_t ota_https_task_handle;
 
 debug_cmd_t tcp_cmd_data_v;
 
@@ -507,7 +508,22 @@ void debug_cmd_proces(char *parm_cmd,debug_cmd_t *cmd)
              * position_target = cmd->value;
              */
             break;
-
+            
+        case DEBUG_CMD_RUN_OTA:
+            ESP_LOGI(
+                TAG,
+                "run_http_ota_server%.6f",
+                cmd->value
+            );
+            if (ota_https_task_handle != NULL) {
+                xTaskNotifyGive(ota_https_task_handle);
+            }
+            /*
+             * TODO:
+             *
+             * position_target = cmd->value;
+             */
+            break;
 
         default:
             ESP_LOGW(
