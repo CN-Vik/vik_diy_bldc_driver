@@ -34,8 +34,8 @@
 
 #define OTA_URL_SIZE 256
 
-#define OTA_HTTP_URL            "http://192.168.1.138:8070/Desktop/project/esp32c3/project/hello_world_example/build/hello_world_example.bin"
-#define OTA_HTTP_RECV_TIMEOUT   5000
+#define OTA_HTTP_URL            "http://192.168.1.138:8070/Downloads/blink.bin"
+#define OTA_HTTP_RECV_TIMEOUT    5000
 
 
 
@@ -45,6 +45,7 @@ extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
 extern const int CONNECTED_BIT;
 extern const int ESPTOUCH_DONE_BIT;
+extern const int RUN_OTA_BIT;
 TaskHandle_t ota_https_task_handle;
 
 
@@ -109,9 +110,26 @@ void ota_https_task(void *pvParameter)
     while (1)
     {
         /* 平时完全死等通知，不占任何 CPU 和带宽 */
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        ESP_LOGI(TAG, "Received OTA command, starting OTA process...");
+        EventBits_t uxBits = xEventGroupWaitBits(
+            g_wifi_event_group,// 事件组句柄
+            RUN_OTA_BIT,// 等待的事件位
+            false, // xClearOnExit：退出时是否清除该位
+            false, // xWaitForAllBits：是否等待所有位
+            portMAX_DELAY 
+        );
+        
+        /*
+         * Wi-Fi 已经连接
+         */
+        if (uxBits & RUN_OTA_BIT)
+        {
+            ESP_LOGI(TAG,
+                     "start_Https_OTA_server!\r\n");
+        }
+
+        ESP_LOGI(TAG, "Received_OTA_command_starting_OTA_process...");
 
         /* 1. 安全检查：确认 FOC 已停机下电 */
         // if (foc_motor_is_running()) {
@@ -124,7 +142,7 @@ void ota_https_task(void *pvParameter)
         /* ------------------------------------------------------------
          * 第 1 步：先等 WiFi 连上（最关键！begin 之前必须有网）
          * ------------------------------------------------------------ */
-        EventBits_t uxBits = xEventGroupWaitBits(
+        uxBits = xEventGroupWaitBits(
             g_wifi_event_group,
             CONNECTED_BIT,
             false,          /* 不清除标志位，其他任务也能读 */
@@ -136,7 +154,7 @@ void ota_https_task(void *pvParameter)
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        ESP_LOGI(TAG, "WiFi connected, starting OTA...");
+        ESP_LOGI(TAG, "WiFi_connected_starting_OTA...");
 
         /* ------------------------------------------------------------
          * 第 2 步：配置 HTTP 客户端
@@ -160,7 +178,7 @@ void ota_https_task(void *pvParameter)
         esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
         if (err != ESP_OK)
         {
-            ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "OTA_begin_failed: %s", esp_err_to_name(err));
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;  /* 失败不自杀，5秒后重试 */
         }
@@ -172,14 +190,14 @@ void ota_https_task(void *pvParameter)
         err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
         if (err != ESP_OK)
         {
-            ESP_LOGE(TAG, "get img desc failed");
+            ESP_LOGE(TAG, "get_otaimg_desc_failed");
             esp_https_ota_abort(https_ota_handle);
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
         }
         if (validate_image_header(&app_desc) != ESP_OK)
         {
-            ESP_LOGE(TAG, "image header verification failed");
+            ESP_LOGE(TAG, "image_header_verification_failed");
             esp_https_ota_abort(https_ota_handle);
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
@@ -196,7 +214,7 @@ void ota_https_task(void *pvParameter)
                 break;  /* 下载完成或出错，跳出循环 */
             }
             /* 打印已下载字节数，方便看进度 */
-            ESP_LOGI(TAG, "Image bytes read: %d",
+            ESP_LOGI(TAG, "ota_Image_bytes_read: %d",
                      esp_https_ota_get_image_len_read(https_ota_handle));
         }
 
@@ -209,7 +227,7 @@ void ota_https_task(void *pvParameter)
             esp_err_t finish_err = esp_https_ota_finish(https_ota_handle);
             if (finish_err == ESP_OK)
             {
-                ESP_LOGI(TAG, "OTA upgrade successful. Rebooting...");
+                ESP_LOGI(TAG, "OTA_upgrade_successful_Rebooting...");
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 esp_restart();  /* 成功 → 重启跑新固件 */
             }
@@ -217,22 +235,22 @@ void ota_https_task(void *pvParameter)
             {
                 if (finish_err == ESP_ERR_OTA_VALIDATE_FAILED)
                 {
-                    ESP_LOGE(TAG, "Image validation failed, image is corrupted");
+                    ESP_LOGE(TAG, "Image_validation_failed_image_is_corrupted");
                 }
-                ESP_LOGE(TAG, "OTA finish failed: 0x%x", finish_err);
+                ESP_LOGE(TAG, "OTA_finish_failed: 0x%x", finish_err);
             }
         }
         else
         {
             /* 数据不完整 → 中止 */
-            ESP_LOGE(TAG, "Complete data was not received.");
+            ESP_LOGE(TAG, "Complete_data_was_not_received.");
             esp_https_ota_abort(https_ota_handle);
         }
 
         /* ------------------------------------------------------------
          * 第 7 步：能走到这里说明失败了，等5秒后回到循环开头重试
          * ------------------------------------------------------------ */
-        ESP_LOGW(TAG, "OTA failed, retry in 5 seconds...");
+        ESP_LOGW(TAG, "OTA_failed_retry_in_5_seconds...");
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }

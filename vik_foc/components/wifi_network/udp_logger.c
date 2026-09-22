@@ -10,6 +10,10 @@
  */
 #include "udp_logger.h"
 
+
+static const char *TAG = "UDP_LOG";
+
+
 udp_log_level_t current_udp_log_level = UDP_LEVEL_INFO; // 默认过滤等级
 
 void udp_log_print(udp_log_level_t level, const char *fmt, ...)
@@ -27,6 +31,12 @@ void udp_log_print(udp_log_level_t level, const char *fmt, ...)
     va_start(args, fmt);
     vsnprintf(buf, UDP_LOG_MAX_LEN, fmt, args);
     va_end(args);
+
+    // ESP_LOGW(
+    //     TAG,
+    //     "%s\r\n",
+    //     buf
+    // );
 
     // 3. 发送到队列 (不要阻塞，保证 FOC/PID 核心算法不被卡死)
     if (xQueueSend(udp_log_queue, &buf, 0) != pdTRUE) {

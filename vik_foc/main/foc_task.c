@@ -66,6 +66,8 @@ TEZ ------------------------------------ TEZ
 #include "vik_foc_pid.h"
 #include "esp_task_wdt.h"
 #include "esp32_flas_nvs.h"
+#include "udp_logger.h"
+
 
 
 const static char *TAG = "FOC_TASK";
@@ -938,9 +940,9 @@ void foc_task(void *arg)
                     foc_work_state = FOC_STATE_OPEN_LOOP;
                 }
 
-                #if 0
+                #if 1
                     static uint32_t log_cnt = 0;
-                    if ( (log_cnt++)>10 ) 
+                    if ( (log_cnt++)>1000 ) 
                     {
                         
                         ESP_LOGI(
@@ -1046,7 +1048,7 @@ void foc_task(void *arg)
 
                 #if 0
                     static uint32_t log_cnt = 0;
-                    if ( (log_cnt++)>1000 ) 
+                    if ( (log_cnt++)>10000 ) 
                     {
                         ESP_LOGI(
                             TAG,
@@ -1064,6 +1066,21 @@ void foc_task(void *arg)
                             // vfoc_m0_dt.pll_val.Ed
         
                         );
+
+                        // UDP_LOGI(
+                        //     // "open_lop: %.3f,%.3f,%.3f, %.3f,%.3f,%.3f \r\n",
+                        //     "open_lop: %.3f,%.3f,%.3f,%.3f,%.3f  \r\n",
+                        //     get_vfoc_theta_e_rad(),
+                        //     smo_theta_e,
+                        //     w_e,
+                        //     now_mech_rpm,
+                        //     foc_lop_out.Uq
+                            
+                        //     // sensor_theta_e,
+                        //     // // (sensor_theta_e-smo_theta_e)
+                        //     // smo_pll_theta_e,
+                        //     // vfoc_m0_dt.pll_val.Ed
+                        // );
         
                         log_cnt = 0;
                     }
@@ -1212,7 +1229,7 @@ void foc_task(void *arg)
 
                     #if 1
                         static uint32_t log_cnt = 0;
-                        if ( (log_cnt++)>10 ) 
+                        if ( (log_cnt++)>10000 ) 
                         {
                             ESP_LOGI(
                                 TAG,

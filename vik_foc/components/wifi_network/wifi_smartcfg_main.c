@@ -41,6 +41,7 @@ extern TaskHandle_t ota_https_task_handle;
 
 const int CONNECTED_BIT      = BIT0;
 const int ESPTOUCH_DONE_BIT  = BIT1;
+const int RUN_OTA_BIT  = BIT2;
 
 
 /* ============================================================
@@ -689,6 +690,8 @@ static void wifi_smart_cfg_task(void *parm)
 
             vTaskDelete(NULL);
         }
+
+        vTaskDelay( pdMS_TO_TICKS(1000) );
     }
 }
 

@@ -28,7 +28,7 @@
 
 
 #define CONFIG_EXAMPLE_IPV4         1
-#define PORT                        2345
+#define TCP_SERVER_PORT             2345
 #define KEEPALIVE_IDLE              60    // 空闲60秒开始探测
 #define KEEPALIVE_INTERVAL          10    // 每10秒重发一次
 #define KEEPALIVE_COUNT             3     // 连续3次失败判断开
@@ -136,7 +136,7 @@ static void tcp_server_task(void *pvParameters)
         struct sockaddr_in *dest_addr_ip4 = (struct sockaddr_in *)&dest_addr;
         dest_addr_ip4->sin_addr.s_addr = htonl(INADDR_ANY);
         dest_addr_ip4->sin_family = AF_INET;
-        dest_addr_ip4->sin_port = htons(PORT);
+        dest_addr_ip4->sin_port = htons(TCP_SERVER_PORT);
         ip_protocol = IPPROTO_IP;
     }
 #endif
@@ -158,7 +158,7 @@ static void tcp_server_task(void *pvParameters)
         ESP_LOGE(TAG, "IPPROTO: %d", addr_family);
         goto CLEAN_UP;
     }
-    ESP_LOGI(TAG, "Socket_bound_port %d", PORT);
+    ESP_LOGI(TAG, "TCP_server_bound_port %d", TCP_SERVER_PORT);
 
     err = listen(listen_sock, 1);
     if (err != 0) {

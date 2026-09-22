@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "app_rtos_resource.h"
+#include "esp_log.h"
 
 // 打印等级定义
 typedef enum {

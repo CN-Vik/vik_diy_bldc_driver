@@ -8,12 +8,15 @@
 #include "udp_logger.h"
 
 
-
 static const char *TAG = "debug_protol";
 
 extern TaskHandle_t ota_https_task_handle;
 
 debug_cmd_t tcp_cmd_data_v;
+
+// extern const int CONNECTED_BIT;
+// extern const int ESPTOUCH_DONE_BIT;
+extern const int RUN_OTA_BIT;
 
 
 
@@ -82,6 +85,7 @@ static const debug_cmd_map_t debug_cmd_table[] =
 
     {"speed_ref", DEBUG_CMD_SPEED_REF},
     {"pos_ref", DEBUG_CMD_POS_REF},
+    {"run_ota", DEBUG_CMD_RUN_OTA},
 };
 
 
@@ -136,11 +140,11 @@ const char *get_debug_cmd_para_name(debug_cmd_id_t id)
 
 
 
-
 /**
  * @brief debug协议命令解析
  * 
- * @param cmd 
+ * @param parm_cmd 命令数据
+ * @param cmd 存储解析的命令数据结构体
  */
 void debug_cmd_proces(char *parm_cmd,debug_cmd_t *cmd)
 {
@@ -195,7 +199,8 @@ void debug_cmd_proces(char *parm_cmd,debug_cmd_t *cmd)
 
     ESP_LOGI(
         TAG,
-        "CMD: %s = %.5f",
+        "CMD[id:%d]: %s = %.2f",
+        cmd->id,
         cmd->name,
         cmd->value
     );
@@ -213,22 +218,21 @@ void debug_cmd_proces(char *parm_cmd,debug_cmd_t *cmd)
             );
             break;
 
-
         /*
          * 速度环
          */
         case DEBUG_CMD_SPEED_KP:
 
             g_ctrl.speed_pid.kp = cmd->value;
-            // ESP_LOGI(
-            //     TAG,
-            //     "Set_speed_Kp = %.4f(%.4f)",
-            //     cmd->value,
-            //     g_ctrl.speed_pid.kp
-            // );
+            ESP_LOGI(
+                TAG,
+                "Set_speed_Kp = %.4f(%.4f)",
+                cmd->value,
+                g_ctrl.speed_pid.kp
+            );
 
             UDP_LOGI(
-                "uSet_speed_Kp: %.3f, %.3f\r\n",
+                "Set_speed_Kp: %.3f, %.3f\r\n",
                 cmd->value,
                 g_ctrl.speed_pid.kp
             );
@@ -512,12 +516,25 @@ void debug_cmd_proces(char *parm_cmd,debug_cmd_t *cmd)
         case DEBUG_CMD_RUN_OTA:
             ESP_LOGI(
                 TAG,
-                "run_http_ota_server%.6f",
+                "run_http_ota_server%.2f",
                 cmd->value
             );
-            if (ota_https_task_handle != NULL) {
-                xTaskNotifyGive(ota_https_task_handle);
+            // if (ota_https_task_handle != NULL) {
+            //     xTaskNotifyGive(ota_https_task_handle);
+            // }
+            if (g_wifi_event_group!=NULL)
+            {
+                /*
+                 * 设置开始OTA升级标志
+                 */
+                xEventGroupSetBits(
+                    g_wifi_event_group,
+                    RUN_OTA_BIT
+                );
+
             }
+            
+
             /*
              * TODO:
              *

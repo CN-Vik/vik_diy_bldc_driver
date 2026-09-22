@@ -28,9 +28,9 @@
 
 
 #define DEST_IP_ADDR    ("192.168.1.138") /*目标IP地址*/
-#define DEST_PORT       (3456) /*目标端口*/
+#define UDP_DEST_PORT       (3456) /*目标端口*/
 
-#define LOCAL_PORT       (8586) /*本地端口*/
+#define UDP_LOCAL_PORT   (8586) /*本地端口*/
 
 #define UDP_RX_BUF_LEN      (128)
 
@@ -92,7 +92,7 @@ static void udp_client_task(void *pvParameters)
         struct sockaddr_in dest_addr={
             .sin_addr.s_addr = inet_addr(DEST_IP_ADDR),
             .sin_family = AF_INET,
-            .sin_port = htons(DEST_PORT)
+            .sin_port = htons(UDP_DEST_PORT)
         };
 
         int udp_client_sock = socket(
@@ -108,7 +108,7 @@ static void udp_client_task(void *pvParameters)
         /*绑定ESP32的固定端口*/
         struct sockaddr_in esp32_addr = {
             .sin_family = AF_INET,
-            .sin_port = htons(LOCAL_PORT),/*esp32的固定端口*/
+            .sin_port = htons(UDP_LOCAL_PORT),/*esp32的固定端口*/
             .sin_addr.s_addr = htonl(INADDR_ANY)
         };
         bind(udp_client_sock, (struct sockaddr*)&esp32_addr, sizeof(esp32_addr) );
@@ -119,7 +119,7 @@ static void udp_client_task(void *pvParameters)
         timeout.tv_usec = 0;
         setsockopt(udp_client_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
 
-        ESP_LOGI(TAG, "Socket_created,_sending_to %s:%d", DEST_IP_ADDR, DEST_PORT);
+        ESP_LOGI(TAG, "Socket_created,_sending_to %s:%d", DEST_IP_ADDR, UDP_DEST_PORT);
 
         // float sped = 0.0f;
 
@@ -137,8 +137,13 @@ static void udp_client_task(void *pvParameters)
             if (uxBits & CONNECTED_BIT)
             {/* Wi-Fi 已经连接 */
                 
-                ESP_LOGI(TAG, "udp_client_runing!\r\n");
+                // ESP_LOGI(TAG, "udp_client_runing!\r\n");
+
+            }else{
+
+                ESP_LOGI(TAG, "udp_client_wifi_not conect!\r\n");
             }
+            
 
 
             // 普通信息打印 (Level: INFO)
@@ -193,8 +198,8 @@ static void udp_client_task(void *pvParameters)
                     
                 }
             #endif
+            vTaskDelay( pdMS_TO_TICKS(100) );
 
-            vTaskDelay(10 / portTICK_PERIOD_MS);
         }
 
         if (udp_client_sock != -1) {
