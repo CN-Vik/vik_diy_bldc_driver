@@ -30,18 +30,41 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "motor_6step.h"
-
-
-
+#include "esp_app_desc.h" 
+#include "version_info.h"
 
 #define USE_FOC
 // #define USE_SIX_STEP
 
-static const char *TAG = "vik_foc_example_main";
+static const char *TAG = "vik_foc_main";
 
 extern void gptimer_creat_main(void);
 extern void wifi_smartcfg_main(void);
 
+
+static void print_build_info(void)
+{
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "        VIK FOC BUILD INFORMATION");
+    ESP_LOGI(TAG, "========================================");
+
+    ESP_LOGI(TAG, "Project     : %s", app_desc->project_name);
+    ESP_LOGI(TAG, "Version     : %s", app_desc->version);
+    ESP_LOGI(TAG, "HW Version  : %s", VIK_HW_VERSION);
+
+    ESP_LOGI(TAG, "Git Commit  : %s", VIK_GIT_COMMIT);
+    ESP_LOGI(TAG, "Git Describe: %s", VIK_GIT_DESCRIBE);
+    ESP_LOGI(TAG, "Git Status  : %s", VIK_GIT_STATUS);
+
+    ESP_LOGI(TAG, "Build Date  : %s", app_desc->date);
+    ESP_LOGI(TAG, "Build Time  : %s", app_desc->time);
+
+    ESP_LOGI(TAG, "ESP-IDF     : %s", app_desc->idf_ver);
+
+    ESP_LOGI(TAG, "========================================");
+}
 
 
 void motor_ctrl_task(void)
@@ -170,7 +193,7 @@ void motor_ctrl_task(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Hello FOC float version");
+    print_build_info();
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)

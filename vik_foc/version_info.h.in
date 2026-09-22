@@ -1,0 +1,16 @@
+#pragma once
+
+/*
+ * This file is generated automatically by CMake.
+ * DO NOT EDIT.
+ */
+
+#define VIK_PROJECT_VERSION       "@PROJECT_VER@"
+#define VIK_PROJECT_NAME          "@VIK_PROJECT_NAME@"
+#define VIK_PROJECT_VERSION_U     "@PROJECT_VER_UNDERSCORE@"
+
+#define VIK_HW_VERSION            "@HW_VERSION@"
+
+#define VIK_GIT_COMMIT            "@GIT_COMMIT@"
+#define VIK_GIT_DESCRIBE         "@GIT_DESCRIBE@"
+#define VIK_GIT_STATUS            "@GIT_STATUS@"
