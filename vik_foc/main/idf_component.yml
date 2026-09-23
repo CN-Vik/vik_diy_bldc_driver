@@ -5,3 +5,4 @@ dependencies:
   idf:
     version: '>=5.0'
   # espressif/as5600: ^0.1.0
+  espressif/esp_rainmaker: ^1.16.1
