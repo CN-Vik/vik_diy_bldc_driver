@@ -23,6 +23,10 @@
 #include "esp_ota_ops.h"  // OTA操作相关函数
 #include "app_rtos_config.h"
 #include "app_rtos_resource.h"
+#include "esp_rmaker_core.h"
+#include "esp_rmaker_ota.h"
+#include "ota_rainmaker.h"
+
 
 /* ============================================================
  * 配置
@@ -55,6 +59,9 @@ static bool s_smartconfig_running = false;
 
 /* 防止 TCP Server 重复启动 */
 static bool s_tcp_server_started = false;
+
+//静态防重入标志位
+static bool rmaker_started = false;
 
 
 /* ============================================================
@@ -333,7 +340,20 @@ static void event_handler(void *arg,
             ESP_LOGI(TAG, "Starting_OTA_HTTPS...");
             tcp_server_main();
             udp_clinet_main();
-            ota_https_main();
+            // ota_https_main();
+
+            if (!rmaker_started) {
+                esp_rmaker_config_t rainmaker_cfg = {
+                    .enable_time_sync = true,
+                };
+                esp_rmaker_node_t *node = esp_rmaker_node_init(&rainmaker_cfg, "VIK Balance Car", "BalanceCar");
+                (void)node; // 防止报 unused variable 警告
+
+                ota_rainmaker_init();//4. 启用云端 OTA
+                esp_rmaker_start();//启动 RainMaker 核心 Agent
+                
+                rmaker_started = true;
+            }
 
             /*wifi连接成功发送个任务通知或者事件标志*/
             // 通知所有等待的线程

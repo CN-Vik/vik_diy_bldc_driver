@@ -13,6 +13,7 @@ idf_component_register(
 
     REQUIRES
         nvs_flash
+        esp_rainmaker
         esp_wifi
         esp_event
         esp_netif
