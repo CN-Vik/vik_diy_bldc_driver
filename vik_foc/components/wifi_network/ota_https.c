@@ -34,7 +34,7 @@
 
 #define OTA_URL_SIZE 256
 
-#define OTA_HTTP_URL            "http://192.168.1.138:8070/Downloads/blink.bin"
+#define OTA_HTTP_URL            "http://192.168.1.138:8070/Downloads/vik_foc_v1_0_5.bin"
 #define OTA_HTTP_RECV_TIMEOUT    5000
 
 
