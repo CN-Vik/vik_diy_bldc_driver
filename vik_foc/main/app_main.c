@@ -47,7 +47,7 @@ static void print_build_info(void)
     const esp_app_desc_t *app_desc = esp_app_get_description();
 
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "        VIK FOC BUILD INFORMATION");
+    ESP_LOGI(TAG, "        VIK_FOC_BUILD_INFORMATION");
     ESP_LOGI(TAG, "========================================");
 
     ESP_LOGI(TAG, "Project     : %s", app_desc->project_name);
