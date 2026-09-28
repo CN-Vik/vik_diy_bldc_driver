@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 # Project Version
 # ============================================================
 
-set(PROJECT_VER "1.0.5")
+set(PROJECT_VER "1.0.9")
 
 # Hardware Version
 set(HW_VERSION "HW_V1.0")
@@ -12,8 +12,10 @@ set(HW_VERSION "HW_V1.0")
 # 1.0.2 -> 1_0_2
 string(REPLACE "." "_" PROJECT_VER_UNDERSCORE "${PROJECT_VER}")
 
-# Project Name
-set(VIK_PROJECT_NAME "vik_foc_v${PROJECT_VER_UNDERSCORE}")
+# Project Name（固定，不带版本号）
+# 版本信息由 PROJECT_VER 单独管理（烧入 app_desc.version），
+# 工程名不再随版本变化，避免 RainMaker OTA 的工程名校验因升级版本而失败。
+set(VIK_PROJECT_NAME "vik_foc")
 
 # ============================================================
 # Git Information

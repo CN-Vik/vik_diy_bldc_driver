@@ -1,5 +1,5 @@
 {
-  "idf.currentSetup": "C:\\esp\\v5.3.5\\esp-idf",
+  "idf.currentSetup": "/home/vik/.espressif/v5.3.5/esp-idf",
   "idf.flashType": "UART",
   "idf.portWin": "COM4",
   "idf.openOcdConfigs": [
