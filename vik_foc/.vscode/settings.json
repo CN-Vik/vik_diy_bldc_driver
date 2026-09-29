@@ -14,5 +14,5 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\ufo28\\Desktop\\Mortor_Driver\\vik_diy_foc\\esp32_diy_foc\\vik_diy_bldc_driver\\vik_foc\\build"
 ],
-"idf.port": "/dev/ttyUSB0"
+"idf.port": "COM10"
 }
