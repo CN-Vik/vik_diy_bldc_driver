@@ -20,6 +20,7 @@ idf_component_register(
         esp_http_client
         esp_https_ota
         app_update
+        mbedtls
 )
 
 # 追加下面这一行：将 main/app_rtos 路径加入本组件的头文件查找列表
