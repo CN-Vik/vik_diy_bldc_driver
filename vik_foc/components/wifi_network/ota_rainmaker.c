@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 #include "esp_ota_ops.h"
 #include "esp_app_desc.h"
 #include "esp_http_client.h"
@@ -16,6 +17,12 @@
 #include "esp_rmaker_ota.h"
 
 static const char *TAG = "OTA_RAINMAKER";
+
+/* 弱函数：OTA 前的电机停机。由 main 组件提供强定义（ota_safety.c）。
+ * 若 main 未提供，则退化为空操作，保证本组件可独立编译。 */
+__attribute__((weak)) void app_ota_prepare_shutdown(void)
+{
+}
 
 /* ============================================================
  * 国内 CDN 固件地址（个体户方案：RainMaker 只当遥控器，
@@ -30,9 +37,11 @@ static const char *TAG = "OTA_RAINMAKER";
 /* 国内 CDN 下载失败后的重试次数，全部失败再回退 AWS 原链路 */
 #define OTA_CN_MAX_ATTEMPTS  2
 
-/* 国内链路下载超时/缓冲（国内网络好，可以开大些跑满速） */
+/* 国内链路下载超时/缓冲
+ * 注意：缓冲区不是越大越快，瓶颈是写 flash。设备跑 FOC 电机时
+ * 可用堆紧张，4KB 足够、且能稳定分配成功（32KB 会 ESP_ERR_NO_MEM） */
 #define OTA_CN_HTTP_TIMEOUT_MS   15000
-#define OTA_CN_RX_BUFFER_SIZE    16384
+#define OTA_CN_RX_BUFFER_SIZE    4096
 
 /* ============================================================
  * 国内 CDN 下载实现：从 OSS/CDN 拉取固件并刷写
@@ -64,11 +73,21 @@ static esp_err_t ota_download_from_cn_cdn(const char *url, char *additional_info
         return ESP_FAIL;
     }
 
-    /* 下载循环：一块块读固件写到 flash */
+    /* 下载循环：一块块读固件写到 flash，顺带打进度看速度 */
+    int64_t t_start = esp_timer_get_time();
+    int last_reported_kb = 0;
     while (1) {
         err = esp_https_ota_perform(https_ota_handle);
         if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
             break;  /* 下载完成或出错，跳出 */
+        }
+        int downloaded = esp_https_ota_get_image_len_read(https_ota_handle);
+        int downloaded_kb = downloaded / 1024;
+        if (downloaded_kb - last_reported_kb >= 128) {
+            int64_t elapsed_ms = (esp_timer_get_time() - t_start) / 1000;
+            int speed_kbps = elapsed_ms > 0 ? (int)(downloaded_kb * 1000 / elapsed_ms) : 0;
+            ESP_LOGI(TAG, "CN download progress: %d KB, %d KB/s", downloaded_kb, speed_kbps);
+            last_reported_kb = downloaded_kb;
         }
     }
 
@@ -119,6 +138,14 @@ static esp_err_t ota_status_callback(esp_rmaker_ota_handle_t ota_handle, esp_rma
         esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_SUCCESS, "Already running this version");
         return ESP_OK;
     }
+
+    /* 0.5 OTA 前电机安全停机：关 MOS、挂起 FOC 任务，释放 CPU 和堆 */
+    app_ota_prepare_shutdown();
+
+    /* 打印堆状态，方便诊断 ESP_ERR_NO_MEM */
+    ESP_LOGI(TAG, "Free heap: %lu bytes, min free: %lu bytes",
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)esp_get_minimum_free_heap_size());
 
     /* 1. 国内 CDN URL（固定文件名） */
     const char *cn_url = OTA_CN_URL;

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 # Project Version
 # ============================================================
 
-set(PROJECT_VER "1.1.2")
+set(PROJECT_VER "1.1.5")
 
 # Hardware Version
 set(HW_VERSION "HW_V1.0")
