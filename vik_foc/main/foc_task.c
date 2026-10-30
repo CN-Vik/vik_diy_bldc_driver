@@ -75,7 +75,7 @@ const static char *TAG = "FOC_TASK";
 /*开启电流环*/
 #define VFOC_CURENT_LOOP_EN    0
 
-#define FOC_SENSOR_LESS_EN     1
+#define FOC_SENSOR_LESS_EN     0
 
 /*浮点数专用的绝对值宏*/
 #define FABS(x) (((x) >= 0.0f ) ? (x) : -(x))
@@ -432,7 +432,7 @@ park_parm_t vfoc_speed_loop(float exp_sped_rpm, float now_sped_rpm)
 
             ESP_LOGI(
                 TAG,
-                "vfoc_sped: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f, %.4f,%.4f \r\n",
+                "vfoc_sped6: %.2f,%.2f,%.2f ,%.4f,%.4f,%.4f,%.4f,%.4f, %.4f,%.4f \r\n",
                 speed_loop_pid.exp_v,//0
                 speed_loop_pid.now_v,//1
                 speed_loop_pid.err_v,
@@ -830,7 +830,7 @@ float vfoc_calibrate_m0_offset(void)
 
 
 /**
- * @brief 20KHZ
+ * @brief 10KHZ
  * 
  * 位置环  << 速度环  <<  电流环
  * 
@@ -881,7 +881,7 @@ void foc_task(void *arg)
     float m0_mch_rpm = 0.0f;
     float m0_mch_postion_deg = 0.0f;
 
-    foc_state_t foc_work_state = FOC_STATE_ALIGN;
+    foc_state_t foc_work_state = FOC_STATE_CLOSED_LOOP;
 
     while (1)
     {
@@ -1091,25 +1091,27 @@ void foc_task(void *arg)
             
             case FOC_STATE_CLOSED_LOOP:
             {
-                // 3. 闭环无感阶段：完全由 SMO 和 PLL 接管
-                smo_theta_e = SMO_Update(
-                    &vfoc_m0_dt.smo_val,
-                    l_temp_clark_v.I_alpha,
-                    l_temp_clark_v.I_beta,
-                    clark_temp.I_alpha,
-                    clark_temp.I_beta
-                );
+                #if ( (FOC_SENSOR_LESS_EN == 1))
+                    // 3. 闭环无感阶段：完全由 SMO 和 PLL 接管
+                    smo_theta_e = SMO_Update(
+                        &vfoc_m0_dt.smo_val,
+                        l_temp_clark_v.I_alpha,
+                        l_temp_clark_v.I_beta,
+                        clark_temp.I_alpha,
+                        clark_temp.I_beta
+                    );
 
-                smo_pll_theta_e = PLL_Update(
-                    &vfoc_m0_dt.pll_val,
-                    vfoc_m0_dt.smo_val.ebmf_alpha,
-                    vfoc_m0_dt.smo_val.ebmf_beta
-                );
+                    smo_pll_theta_e = PLL_Update(
+                        &vfoc_m0_dt.pll_val,
+                        vfoc_m0_dt.smo_val.ebmf_alpha,
+                        vfoc_m0_dt.smo_val.ebmf_beta
+                    );
 
-                float w_e = vfoc_calc_we(&vfoc_we_calc_v, smo_pll_theta_e);
-                float now_mech_rpm = calc_rpm_from_we(w_e,MOTOR_POLR);
+                    float w_e = vfoc_calc_we(&vfoc_we_calc_v, smo_pll_theta_e);
+                    float now_mech_rpm = calc_rpm_from_we(w_e,MOTOR_POLR);
 
-                set_vfoc_theta_e_rad(smo_pll_theta_e);/*更新电角度值*/
+                    set_vfoc_theta_e_rad(smo_pll_theta_e);/*更新电角度值*/
+                #endif
                 
                 /*接收机械角度数据*/
                 if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
@@ -1123,8 +1125,9 @@ void foc_task(void *arg)
                 }
                 
                 sensor_theta_e = vfoc_calc_theta_e_rad(m0_mch_postion_deg);/*更新电角度值*/
-        
-                #if ( (FOC_SENSOR_LESS_EN == 1) && (1) )
+                set_vfoc_theta_e_rad(sensor_theta_e);/*更新电角度值*/
+
+                #if ( (FOC_SENSOR_LESS_EN == 1) || (1) )
                     /* park变换
                     * 输入两相静止坐标系电流 I_alpha、I_beta，
                     * 结合当前电角度 theta_e_rad，
@@ -1141,21 +1144,21 @@ void foc_task(void *arg)
                 if ( balance_vehicle_car.m0_zero_theta_e_calib_flag )
                 {/*已经进行了电角度零点对齐*/
         
-                    static uint32_t run_cnt;
-                    if ((run_cnt++)>=(20*100*1))
-                    {
-                        run_cnt = 0;
-                        motor_exp_rpm+=1.0f;
-                        if (motor_exp_rpm>=(650.0f))
-                        {
-                            motor_exp_rpm=1.0f;
-                        }
+                    // static uint32_t run_cnt;
+                    // if ((run_cnt++)>=(20*100*1))
+                    // {
+                    //     run_cnt = 0;
+                    //     motor_exp_rpm+=10.0f;
+                    //     if (motor_exp_rpm>=(650.0f))
+                    //     {
+                    //         motor_exp_rpm=1.0f;
+                    //     }
                         
-                    }
+                    // }
                     
                     switch ((++freq_1KHZ_cnt))
                     {
-                        case 20:{/* 20KHZ/2= 10KHZ*/
+                        case 1:{/* 20KHZ/2= 10KHZ*/
         
                             #if (VFOC_CURENT_LOOP_EN == 1)
         
@@ -1171,7 +1174,7 @@ void foc_task(void *arg)
                                             uxQueueMessagesWaiting(g_motor0_mech_rpm_queue)
                                         );
                                     }
-                                    motor_exp_rpm=400.0f;
+                                    motor_exp_rpm=+300.0f;
                                     // m0_mch_rpm = now_mech_rpm;
                                     foc_lop_out = vfoc_speed_loop(motor_exp_rpm,m0_mch_rpm);
                                 #endif
@@ -1187,19 +1190,19 @@ void foc_task(void *arg)
         
                     switch ((++freq_200HZ_cnt))
                     {
-                        case 100:{/* 20KHZ/100= 200HZ*/
+                        case 50:{/* 10KHZ/50= 200HZ*/
         
-                            #if 0
+                            #if 0 /*FOC-位置环*/
                                 /*接收机械角度数据*/
-                                if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
-                                {
-                                    ESP_LOGW(
-                                        TAG,
-                                        "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
-                                        uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
-                                        uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
-                                    );
-                                }
+                                // if ( xQueueReceive(g_motor0_mech_deg_mailbox, &m0_mch_postion_deg, 5)!= pdPASS )
+                                // {
+                                //     ESP_LOGW(
+                                //         TAG,
+                                //         "g_motor0_mech_deg_mailbox recive failed! ,remi:%d,use:%d\r\n",
+                                //         uxQueueSpacesAvailable(g_motor0_mech_deg_mailbox),
+                                //         uxQueueMessagesWaiting(g_motor0_mech_deg_mailbox)
+                                //     );
+                                // }
                                 motor_exp_pos_deg =150.0f;
                                 foc_lop_out = vfoc_postion_loop(motor_exp_pos_deg, m0_mch_postion_deg);
                             #endif
@@ -1227,7 +1230,7 @@ void foc_task(void *arg)
                     #endif
 
 
-                    #if 1
+                    #if 0
                         static uint32_t log_cnt = 0;
                         if ( (log_cnt++)>10000 ) 
                         {

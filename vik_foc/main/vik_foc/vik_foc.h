@@ -301,7 +301,7 @@ typedef enum
 typedef enum {
     FOC_STATE_ALIGN = 0,    // 预定位（初始拉直转子，防止启动反转）
     FOC_STATE_OPEN_LOOP,    // 开环强拖（I/F 启动）
-    FOC_STATE_CLOSED_LOOP   // 闭环无感（SMO+PLL 介入）
+    FOC_STATE_CLOSED_LOOP   // 闭环无感/有感（SMO+PLL 介入）
 } foc_state_t;
 
 
